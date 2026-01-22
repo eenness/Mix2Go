@@ -6,6 +6,7 @@
 #include "DSP/Processors/BaseProcessor.h"
 #include "DSP/Processors/ProcessorUtils.h"
 #include "Engine/MacroMap.h"
+#include <atomic> //sicheres speichern und lesen von werten
 //==============================================================================
 class AudioPluginAudioProcessor final : public juce::AudioProcessor,
         public juce::AudioProcessorValueTreeState::Listener,
@@ -60,6 +61,12 @@ public:
     std::atomic<bool> m_adding_processor {false};
 
     viator::engine::MacroMap& getMacroMap() { return m_macro_map; }
+
+    
+    float getMeterL() const { return meterL.load(); } //linken kanal lautstärke holen
+    float getMeterR() const { return meterR.load(); } //rechten kanal lautstärke holen
+
+
 private:
 
     juce::AudioProcessorValueTreeState m_tree_state;
@@ -77,4 +84,7 @@ private:
     viator::engine::MacroMap m_macro_map;
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
+
+    std::atomic<float> meterL { 0.0f };     //linken und rechten kanal anlegen um ihn dann zu getten
+    std::atomic<float> meterR { 0.0f };
 };
