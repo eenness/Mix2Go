@@ -213,13 +213,29 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     juce::ScopedNoDenormals noDenormals;
 
-    for (int i = 0; i < m_processors.size(); ++ i)
-    {
-        if (m_processors[i])
-        {
-            m_processors[i]->processBlock(buffer, midiMessages);
-        }
-    }
+    // messen ob master audio schickt 
+    const float peakL = buffer.getMagnitude(0, 0, buffer.getNumSamples()); //peak links messen
+    const float peakR = buffer.getNumChannels() > 1                        
+                  ? buffer.getMagnitude(1, 0, buffer.getNumSamples())
+                  : 0.0f;                                                  //peak rechts messen falls zwei kanäle vorhanden
+
+    //if (peakL > 0.001f || peakR > 0.001f)
+        //DBG("MASTER peak L=" << peakL << " R=" << peakR);                  //wenn stille kein debug spam
+
+    static int dbgCounter = 0;
+    if ((++dbgCounter % 60) == 0 && (peakL > 0.001f || peakR > 0.001f))     //debug error nur jede sekunde (je nach eingestelltem buffersize im daw)
+        DBG("MASTER peak L=" << peakL << " R=" << peakR);
+
+    meterL.store(peakL); //meine peaks speichern um sie in der gui ausgeben zu können
+    meterR.store(peakR);
+
+    //for (int i = 0; i < m_processors.size(); ++ i)
+    //{
+        //if (m_processors[i])
+        //{
+        //   m_processors[i]->processBlock(buffer, midiMessages);
+        //}
+    //}
 }
 
 void AudioPluginAudioProcessor::addProcessor(viator::dsp::processors::ProcessorType type)
