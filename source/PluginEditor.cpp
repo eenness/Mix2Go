@@ -22,6 +22,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
     refreshMacroMappings();
 
     setSize(1500, 700);
+    startTimerHz(30);                       //setzt das intervall vom pegel aktualisieren auf 30ms
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
@@ -41,6 +42,32 @@ void AudioPluginAudioProcessorEditor::paint(juce::Graphics &g)
 
     g.setColour(juce::Colours::black);
     g.drawRect(0, 0, getWidth(), getHeight(), 3);
+
+    // Breite der Pegelbalken
+    const int meterWidth = 40;
+
+    // Maximale Höhe der Pegel
+    const int meterHeight = getHeight() - 40;
+
+    // X-Positionen für Links und Rechts
+    int leftX = 40;
+    int rightX = 120;
+
+    // Unterkante (Pegel wachsen nach oben)
+    int bottom = getHeight() - 20;
+
+    // Umrechnung von 0..1 auf Pixelhöhe
+    int hL = juce::jlimit(0, meterHeight, (int)(meterL * meterHeight));
+    int hR = juce::jlimit(0, meterHeight, (int)(meterR * meterHeight));
+
+    // Farbe setzen
+    g.setColour(juce::Colours::green);
+
+    // Linken Pegel zeichnen
+    g.fillRect(leftX, bottom - hL, meterWidth, hL);
+
+    // Rechten Pegel zeichnen
+    g.fillRect(rightX, bottom - hR, meterWidth, hR);
 }
 
 void AudioPluginAudioProcessorEditor::resized()
@@ -213,4 +240,13 @@ void AudioPluginAudioProcessorEditor::refreshMacroMappings()
             }
         }
     }
+}
+void AudioPluginAudioProcessorEditor::timerCallback()
+{
+    // Pegel vom Processor holen
+    meterL = processorRef.getMeterL();
+    meterR = processorRef.getMeterR();
+
+    // GUI neu zeichnen
+    repaint();
 }

@@ -220,10 +220,10 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                   : 0.0f;                                                  //peak rechts messen falls zwei kanäle vorhanden
 
     //if (peakL > 0.001f || peakR > 0.001f)
-        //DBG("MASTER peak L=" << peakL << " R=" << peakR);                  //wenn stille kein debug spam
+        //DBG("MASTER peak L=" << peakL << " R=" << peakR);                //wenn stille kein debug spam
 
     static int dbgCounter = 0;
-    if ((++dbgCounter % 60) == 0 && (peakL > 0.001f || peakR > 0.001f))     //debug error nur jede sekunde (je nach eingestelltem buffersize im daw)
+    if ((++dbgCounter % 60) == 0 && (peakL > 0.001f || peakR > 0.001f))    //debug error nur jede sekunde (je nach eingestelltem buffersize im daw)
         DBG("MASTER peak L=" << peakL << " R=" << peakR);
 
     meterL.store(peakL); //meine peaks speichern um sie in der gui ausgeben zu können

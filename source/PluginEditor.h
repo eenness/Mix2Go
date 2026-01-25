@@ -7,7 +7,11 @@
 
 //==============================================================================
 class AudioPluginAudioProcessorEditor final
-        : public juce::AudioProcessorEditor, public juce::ChangeListener, public juce::ActionListener
+        : public juce::AudioProcessorEditor,
+          public juce::ChangeListener,
+          public juce::ActionListener,
+          private juce::Timer                                           //timer--> klasse aus juce geerbt
+                                                                        //ermöglicht prozesse in zeitintervallen auszuführen
 {
 public:
     explicit AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor &);
@@ -50,4 +54,10 @@ private:
     juce::Viewport m_view_port;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)
+
+    void timerCallback() override;  //wird verwendet um funktionen wieder aufzurufen
+                                    //wir verwenden es um pegel neu abzufangen
+
+    float meterL = 0.0f; //pegel werte speichern
+    float meterR = 0.0f;
 };
