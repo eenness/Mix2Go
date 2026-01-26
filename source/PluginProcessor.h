@@ -6,6 +6,7 @@
 #include "DSP/Processors/BaseProcessor.h"
 #include "DSP/Processors/ProcessorUtils.h"
 #include "Engine/MacroMap.h"
+#include "Streaming/AudioStreamManager.h"
 #include <atomic> //sicheres speichern und lesen von werten
 //==============================================================================
 class AudioPluginAudioProcessor final : public juce::AudioProcessor,
@@ -66,6 +67,10 @@ public:
     float getMeterL() const { return meterL.load(); } //linken kanal lautstärke holen
     float getMeterR() const { return meterR.load(); } //rechten kanal lautstärke holen
 
+    // Streaming API
+    mix2go::streaming::AudioStreamManager& getStreamManager() { return m_stream_manager; }
+    bool isStreamingEnabled() const { return m_stream_manager.isStreaming(); }
+
 
 private:
 
@@ -82,9 +87,12 @@ private:
     juce::CriticalSection m_processor_lock;
 
     viator::engine::MacroMap m_macro_map;
-    //==============================================================================
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
+
+    // Streaming
+    mix2go::streaming::AudioStreamManager m_stream_manager;
 
     std::atomic<float> meterL { 0.0f };     //linken und rechten kanal anlegen um ihn dann zu getten
     std::atomic<float> meterR { 0.0f };
+    //==============================================================================
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
 };

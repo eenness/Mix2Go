@@ -4,12 +4,14 @@
 #include "GUI/Editors/BaseEditor.h"
 #include "GUI/Views/EditorRack.h"
 #include "GUI/Widgets/MacroSlider.h"
+#include "Streaming/AudioStreamManager.h"
 
 //==============================================================================
 class AudioPluginAudioProcessorEditor final
         : public juce::AudioProcessorEditor,
           public juce::ChangeListener,
           public juce::ActionListener,
+          public mix2go::streaming::StreamListener,
           private juce::Timer                                           //timer--> klasse aus juce geerbt
                                                                         //ermöglicht prozesse in zeitintervallen auszuführen
 {
@@ -53,11 +55,27 @@ private:
 
     juce::Viewport m_view_port;
 
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)
+    // Streaming UI components
+    juce::TextButton m_stream_button { "Start Streaming" };
+    juce::Label m_status_label { "StatusLabel", "Disconnected" };
+    juce::Label m_ip_label { "IPLabel", "Target IP:" };
+    juce::TextEditor m_ip_input;
+    juce::Label m_port_label { "PortLabel", "Port:" };
+    juce::TextEditor m_port_input;
+    juce::Label m_stats_label { "StatsLabel", "" };
+
+    void initStreamingUI();
+    void onStreamButtonClicked();
+    void updateStreamingUI();
+    
+    // StreamListener interface
+    void streamStateChanged(mix2go::streaming::StreamState newState) override;
 
     void timerCallback() override;  //wird verwendet um funktionen wieder aufzurufen
                                     //wir verwenden es um pegel neu abzufangen
 
     float meterL = 0.0f; //pegel werte speichern
     float meterR = 0.0f;
+    
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)
 };

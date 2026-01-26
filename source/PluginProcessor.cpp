@@ -168,6 +168,9 @@ void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
             processor->prepareToPlay(sampleRate, samplesPerBlock);
         }
     }
+
+    // Prepare streaming with audio settings
+    m_stream_manager.prepare(sampleRate, samplesPerBlock, getTotalNumInputChannels());
 }
 
 void AudioPluginAudioProcessor::releaseResources()
@@ -228,6 +231,12 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     meterL.store(peakL); //meine peaks speichern um sie in der gui ausgeben zu können
     meterR.store(peakR);
+
+    // Push audio to streaming FIFO if streaming is active
+    if (m_stream_manager.isStreaming())
+    {
+        m_stream_manager.pushAudioData(buffer);
+    }
 
     //for (int i = 0; i < m_processors.size(); ++ i)
     //{
