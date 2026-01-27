@@ -9,9 +9,7 @@
 namespace mix2go {
 namespace streaming {
 
-/**
- * Connection state for the audio stream
- */
+// Status für Streaming
 enum class StreamState
 {
     Disconnected,
@@ -20,9 +18,7 @@ enum class StreamState
     Error
 };
 
-/**
- * Listener interface for stream state changes
- */
+// Interface für Listener (GUI updates usw)
 class StreamListener
 {
 public:
@@ -31,21 +27,14 @@ public:
     virtual void streamStatsUpdated(uint64_t packetsSent, uint64_t bytesSent) {}
 };
 
-/**
- * Central manager for audio streaming.
- * 
- * Coordinates:
- * - Audio FIFO buffer
- * - Network sender thread
- * - State management
- * - Statistics
- */
+// Verwaltet das ganze Audio Streaming
+// Verbindet FIFO, Network Sender und so weiter
 class AudioStreamManager
 {
 public:
     AudioStreamManager()
     {
-        // Configure network sender callback
+        // Callback setzen
         m_sender.setAudioCallback([this](AudioPacket& packet) {
             return fillPacketFromFIFO(packet);
         });
@@ -57,48 +46,42 @@ public:
     }
     
     //==========================================================================
-    // Configuration
+    // Config Kram
     //==========================================================================
     
-    /** Prepare the stream manager with audio settings */
+    // Setup machen
     void prepare(double sampleRate, int samplesPerBlock, int numChannels)
     {
         m_sampleRate = sampleRate;
         m_samplesPerBlock = samplesPerBlock;
         m_numChannels = numChannels;
         
-        // Size FIFO for ~1 second of audio
-        const int fifoSize = static_cast<int>(sampleRate) * 2;
+        // FIFO Größe für ca 1 Sekunde Puffer
+        int fifoSize = (int)sampleRate * 2;
         m_fifo.prepare(numChannels, fifoSize);
         
-        // Config packet size: send ~10ms of audio per packet
-        m_packetSamples = static_cast<int>(sampleRate * 0.01);
+        // Packet Größe: ca 10ms Audio pro Paket senden
+        m_packetSamples = (int)(sampleRate * 0.01);
         
-        DBG("AudioStreamManager: Prepared - SR=" << sampleRate 
-            << " block=" << samplesPerBlock 
-            << " ch=" << numChannels
-            << " packetSamples=" << m_packetSamples);
+        DBG("Manager Prepared: SR=" << sampleRate 
+            << " PacketSamples=" << m_packetSamples);
     }
     
-    /** Set target IP and port */
-    void setTarget(const juce::String& ipAddress, int port)
+    // IP setzen
+    void setTarget(juce::String ipAddress, int port)
     {
         m_targetIP = ipAddress;
         m_targetPort = port;
         m_sender.setTarget(ipAddress, port);
     }
     
-    /** Get current target IP */
-    [[nodiscard]] juce::String getTargetIP() const { return m_targetIP; }
-    
-    /** Get current target port */
-    [[nodiscard]] int getTargetPort() const { return m_targetPort; }
+    juce::String getTargetIP() { return m_targetIP; }
+    int getTargetPort() { return m_targetPort; }
     
     //==========================================================================
-    // Streaming Control
+    // Streaming Start/Stop
     //==========================================================================
     
-    /** Start streaming audio */
     bool startStreaming()
     {
         if (m_state == StreamState::Streaming)
@@ -116,98 +99,89 @@ public:
             return false;
         }
         
-        m_isStreaming.store(true);
+        m_isStreaming = true;
         setState(StreamState::Streaming);
         
-        DBG("AudioStreamManager: Started streaming to " << m_targetIP << ":" << m_targetPort);
+        DBG("Streaming started!");
         return true;
     }
     
-    /** Stop streaming */
     void stopStreaming()
     {
-        m_isStreaming.store(false);
+        m_isStreaming = false;
         m_sender.stop();
         m_fifo.reset();
         setState(StreamState::Disconnected);
         
-        DBG("AudioStreamManager: Stopped streaming");
+        DBG("Streaming stopped");
     }
     
-    /** Check if currently streaming */
-    [[nodiscard]] bool isStreaming() const noexcept
+    bool isStreaming()
     {
-        return m_isStreaming.load(std::memory_order_relaxed);
+        return m_isStreaming;
     }
     
-    /** Get current state */
-    [[nodiscard]] StreamState getState() const noexcept
+    StreamState getState()
     {
         return m_state;
     }
     
-    /** Get state as string */
-    [[nodiscard]] juce::String getStateString() const
+    // Status als Text für GUI
+    juce::String getStateString()
     {
-        switch (m_state)
-        {
-            case StreamState::Disconnected: return "Disconnected";
-            case StreamState::Connecting:   return "Connecting...";
-            case StreamState::Streaming:    return "Streaming";
-            case StreamState::Error:        return "Error";
-        }
+        if (m_state == StreamState::Disconnected) return "Disconnected";
+        if (m_state == StreamState::Connecting) return "Connecting...";
+        if (m_state == StreamState::Streaming) return "Streaming";
+        if (m_state == StreamState::Error) return "Error";
         return "Unknown";
     }
     
     //==========================================================================
-    // Audio Thread Interface
+    // Audio Thread
     //==========================================================================
     
-    /** Push audio data from processBlock (called from audio thread) 
-     *  Only pushes if audio level exceeds silence threshold */
+    // Hier kommen die Daten vom Audio Thread an
     void pushAudioData(const juce::AudioBuffer<float>& buffer)
     {
-        if (!m_isStreaming.load(std::memory_order_relaxed))
+        if (!m_isStreaming)
             return;
         
-        // Silence detection: check if buffer has meaningful audio
+        // Check ob Stille ist (Magnitude)
         float maxLevel = 0.0f;
         for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
         {
-            const float chLevel = buffer.getMagnitude(ch, 0, buffer.getNumSamples());
-            maxLevel = std::max(maxLevel, chLevel);
+            float chLevel = buffer.getMagnitude(ch, 0, buffer.getNumSamples());
+            if (chLevel > maxLevel) maxLevel = chLevel;
         }
         
-        // Only stream if level exceeds threshold (-60dB ≈ 0.001)
-        constexpr float silenceThreshold = 0.001f;
-        if (maxLevel < silenceThreshold)
+        // Wenn zu leise, dann nix senden
+        if (maxLevel < 0.001f) // -60dB ca
         {
-            m_silentBlocks.fetch_add(1, std::memory_order_relaxed);
-            return; // Skip silent audio
+            m_silentBlocks++;
+            return; 
         }
         
-        m_silentBlocks.store(0, std::memory_order_relaxed);
+        m_silentBlocks = 0;
         m_fifo.push(buffer);
     }
     
-    /** Check if currently receiving audio (not silent) */
-    [[nodiscard]] bool hasAudioSignal() const noexcept
+    bool hasAudioSignal()
     {
-        return m_silentBlocks.load(std::memory_order_relaxed) < 10;
+        return m_silentBlocks < 10;
     }
     
     //==========================================================================
-    // Statistics
+    // Stats
     //==========================================================================
     
-    [[nodiscard]] uint64_t getPacketsSent() const { return m_sender.getPacketsSent(); }
-    [[nodiscard]] uint64_t getBytesSent() const { return m_sender.getBytesSent(); }
-    [[nodiscard]] uint64_t getFIFOOverruns() const { return m_fifo.getOverrunCount(); }
-    [[nodiscard]] uint64_t getFIFOUnderruns() const { return m_fifo.getUnderrunCount(); }
-    [[nodiscard]] int getFIFOLevel() const { return m_fifo.getNumReady(); }
+    uint64_t getPacketsSent() { return m_sender.getPacketsSent(); }
+    uint64_t getBytesSent() { return m_sender.getBytesSent(); }
+    uint64_t getFIFOOverruns() { return m_fifo.getOverrunCount(); }
+    uint64_t getFIFOUnderruns() { return m_fifo.getUnderrunCount(); }
+    int getFIFOLevel() { return m_fifo.getNumReady(); }
     
     //==========================================================================
-    // Listener Management
+    // Listener
     //==========================================================================
     
     void addListener(StreamListener* listener)
@@ -230,6 +204,7 @@ private:
             
         m_state = newState;
         
+        // Listener benachrichtigen
         juce::ScopedLock lock(m_listenerLock);
         for (auto* listener : m_listeners)
         {
@@ -238,58 +213,50 @@ private:
         }
     }
     
-    /** Fill an AudioPacket from the FIFO (called from network thread) */
+    // Wird vom Network Thread aufgerufen
     bool fillPacketFromFIFO(AudioPacket& packet)
     {
         if (m_fifo.getNumReady() < m_packetSamples)
             return false;
             
-        // Create temp buffer and read from FIFO
+        // Temp Buffer
         juce::AudioBuffer<float> tempBuffer(m_numChannels, m_packetSamples);
         
         if (!m_fifo.pop(tempBuffer, m_packetSamples))
             return false;
         
-        // Fill packet
+        // Paket füllen
         packet.setFromBuffer(tempBuffer.getArrayOfReadPointers(), 
                             m_numChannels, m_packetSamples,
-                            static_cast<uint32_t>(m_sampleRate));
+                            (uint32_t)m_sampleRate);
         
-        // Set timestamp (microseconds since stream start)
-        const double ticksPerMicrosecond = 
-            juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
-        const auto ticksSinceStart = 
-            juce::Time::getHighResolutionTicks() - m_streamStartTime;
-        packet.timestamp = static_cast<uint64_t>(ticksSinceStart / ticksPerMicrosecond);
+        // Zeitstempel berechnen
+        double ticksPerMicrosecond = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
+        auto ticksSinceStart = juce::Time::getHighResolutionTicks() - m_streamStartTime;
         
-        // Set sequence number
+        packet.timestamp = (uint64_t)(ticksSinceStart / ticksPerMicrosecond);
         packet.sequenceNumber = m_sequenceNumber++;
         
         return true;
     }
     
-    // Audio settings
-    double m_sampleRate { 44100.0 };
-    int m_samplesPerBlock { 512 };
-    int m_numChannels { 2 };
-    int m_packetSamples { 441 }; // ~10ms at 44.1kHz
+    double m_sampleRate = 44100.0;
+    int m_samplesPerBlock = 512;
+    int m_numChannels = 2;
+    int m_packetSamples = 441;
     
-    // Network settings
-    juce::String m_targetIP { "127.0.0.1" };
-    int m_targetPort { 12345 };
+    juce::String m_targetIP = "127.0.0.1";
+    int m_targetPort = 12345;
     
-    // Components
     ThreadSafeFIFO m_fifo;
     NetworkSender m_sender;
     
-    // State
-    StreamState m_state { StreamState::Disconnected };
+    StreamState m_state = StreamState::Disconnected;
     std::atomic<bool> m_isStreaming { false };
-    std::atomic<int> m_silentBlocks { 0 };  // Count of consecutive silent blocks
-    uint32_t m_sequenceNumber { 0 };
-    juce::int64 m_streamStartTime { 0 };
+    std::atomic<int> m_silentBlocks { 0 };
+    uint32_t m_sequenceNumber = 0;
+    juce::int64 m_streamStartTime = 0;
     
-    // Listeners
     juce::CriticalSection m_listenerLock;
     juce::Array<StreamListener*> m_listeners;
     

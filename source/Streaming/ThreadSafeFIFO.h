@@ -7,54 +7,61 @@
 namespace mix2go {
 namespace streaming {
 
-/**
- * Thread-safe, lock-free FIFO buffer for audio samples.
- * 
- * Uses JUCE's AbstractFifo for lock-free producer/consumer pattern
- * between the real-time audio thread and the network sender thread.
- */
+// Ein FIFO Puffer der thread-safe ist
+// Damit kann der Audio Thread (schnell) und der Netzwerk Thread (langsam)
+// sicher Daten austauschen ohne dass es knackst.
 class ThreadSafeFIFO
 {
 public:
-    explicit ThreadSafeFIFO(int numSamples = 65536)
+    ThreadSafeFIFO(int numSamples = 65536)
         : m_fifo(numSamples), m_buffer(2, numSamples)
     {
     }
     
-    /** Prepare with specific channel count and buffer size */
+    // Setup für Channels und Größe
     void prepare(int numChannels, int bufferSizeInSamples)
     {
+        // Puffer neu anlegen
         m_buffer.setSize(numChannels, bufferSizeInSamples, false, true, false);
         m_fifo.setTotalSize(bufferSizeInSamples);
-        m_numChannels.store(numChannels);
+        m_numChannels = numChannels;
     }
     
-    /** Push audio samples from the audio thread (producer) */
+    // Daten reinschreiben (vom Audio Thread)
     bool push(const juce::AudioBuffer<float>& source)
     {
-        const auto numSamples = source.getNumSamples();
-        const auto numChannels = juce::jmin(source.getNumChannels(), m_buffer.getNumChannels());
+        auto numSamples = source.getNumSamples();
+        auto sourceChannels = source.getNumChannels();
         
+        // wir können nicht mehr channel schreiben als wir haben
+        int channelsToCopy = sourceChannels;
+        if (channelsToCopy > m_buffer.getNumChannels())
+            channelsToCopy = m_buffer.getNumChannels();
+        
+        // check ob genug platz ist
         if (m_fifo.getFreeSpace() < numSamples)
         {
-            m_overruns.fetch_add(1, std::memory_order_relaxed);
-            return false; // Buffer full, drop samples
+            m_overruns++; // fehler zählen
+            return false;
         }
         
-        const auto scope = m_fifo.write(numSamples);
+        // schreiben vorbereiten
+        auto scope = m_fifo.write(numSamples);
         
+        // erster block kopieren
         if (scope.blockSize1 > 0)
         {
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int ch = 0; ch < channelsToCopy; ++ch)
             {
                 m_buffer.copyFrom(ch, scope.startIndex1, 
                                   source, ch, 0, scope.blockSize1);
             }
         }
         
+        // zweiter block kopieren (wrap around)
         if (scope.blockSize2 > 0)
         {
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int ch = 0; ch < channelsToCopy; ++ch)
             {
                 m_buffer.copyFrom(ch, scope.startIndex2, 
                                   source, ch, scope.blockSize1, scope.blockSize2);
@@ -64,30 +71,35 @@ public:
         return true;
     }
     
-    /** Pop audio samples for the network thread (consumer) */
+    // Daten rauslesen (für Netzwerk)
     bool pop(juce::AudioBuffer<float>& dest, int numSamples)
     {
-        const auto numChannels = juce::jmin(dest.getNumChannels(), m_buffer.getNumChannels());
+        int channelsToCopy = dest.getNumChannels();
+        if (channelsToCopy > m_buffer.getNumChannels())
+            channelsToCopy = m_buffer.getNumChannels();
         
+        // check ob genug da ist
         if (m_fifo.getNumReady() < numSamples)
         {
-            m_underruns.fetch_add(1, std::memory_order_relaxed);
-            return false; // Not enough samples available
+            m_underruns++; // fehler zählen
+            return false; 
         }
         
-        const auto scope = m_fifo.read(numSamples);
+        auto scope = m_fifo.read(numSamples);
         
+        // lesen block 1
         if (scope.blockSize1 > 0)
         {
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int ch = 0; ch < channelsToCopy; ++ch)
             {
                 dest.copyFrom(ch, 0, m_buffer, ch, scope.startIndex1, scope.blockSize1);
             }
         }
         
+        // lesen block 2
         if (scope.blockSize2 > 0)
         {
-            for (int ch = 0; ch < numChannels; ++ch)
+            for (int ch = 0; ch < channelsToCopy; ++ch)
             {
                 dest.copyFrom(ch, scope.blockSize1, 
                               m_buffer, ch, scope.startIndex2, scope.blockSize2);
@@ -97,52 +109,47 @@ public:
         return true;
     }
     
-    /** Get number of samples ready to read */
-    [[nodiscard]] int getNumReady() const noexcept
+    // Wie viel ist drin?
+    int getNumReady()
     {
         return m_fifo.getNumReady();
     }
     
-    /** Get available space for writing */
-    [[nodiscard]] int getFreeSpace() const noexcept
+    // Wie viel Platz ist noch?
+    int getFreeSpace()
     {
         return m_fifo.getFreeSpace();
     }
     
-    /** Get number of channels */
-    [[nodiscard]] int getNumChannels() const noexcept
+    int getNumChannels()
     {
-        return m_numChannels.load(std::memory_order_relaxed);
+        return m_numChannels; // atomics gehen auch so
     }
     
-    /** Clear the buffer */
+    // Alles löschen
     void reset()
     {
         m_fifo.reset();
         m_buffer.clear();
-        m_overruns.store(0, std::memory_order_relaxed);
-        m_underruns.store(0, std::memory_order_relaxed);
+        m_overruns = 0;
+        m_underruns = 0;
     }
     
-    /** Get overrun count (samples dropped due to full buffer) */
-    [[nodiscard]] uint64_t getOverrunCount() const noexcept
-    {
-        return m_overruns.load(std::memory_order_relaxed);
-    }
-    
-    /** Get underrun count (read attempts with insufficient data) */
-    [[nodiscard]] uint64_t getUnderrunCount() const noexcept
-    {
-        return m_underruns.load(std::memory_order_relaxed);
-    }
+    // Getter für Stats
+    uint64_t getOverrunCount() { return m_overruns; }
+    uint64_t getUnderrunCount() { return m_underruns; }
     
 private:
     juce::AbstractFifo m_fifo;
     juce::AudioBuffer<float> m_buffer;
+    
     std::atomic<int> m_numChannels { 2 };
+    
+    // simple counters
     std::atomic<uint64_t> m_overruns { 0 };
     std::atomic<uint64_t> m_underruns { 0 };
     
+    // JUCE macro muss sein
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ThreadSafeFIFO)
 };
 

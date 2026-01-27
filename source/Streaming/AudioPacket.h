@@ -7,44 +7,37 @@
 namespace mix2go {
 namespace streaming {
 
-/**
- * Audio packet structure for network transmission over UDP.
- * 
- * Packet layout (header + payload):
- * - uint32_t magic (4 bytes) - 0x4D324730 "M2G0"
- * - uint32_t sampleRate (4 bytes)
- * - uint16_t numChannels (2 bytes)
- * - uint32_t numSamples (4 bytes) - samples per channel
- * - uint64_t timestamp (8 bytes) - microseconds since stream start
- * - uint32_t sequenceNumber (4 bytes) - for packet ordering/loss detection
- * - float[] audioData (variable) - interleaved samples
- */
+// Einfache Struktur für das Audio Paket
+// Wird so übers Netzwerk geschickt
 struct AudioPacket
 {
-    static constexpr uint32_t MAGIC = 0x4D324730; // "M2G0"
-    static constexpr size_t HEADER_SIZE = 26; // bytes before audio data
+    // Konstanten
+    static const uint32_t MAGIC = 0x4D324730; // "M2G0"
+    static const size_t HEADER_SIZE = 26; 
     
-    uint32_t magic { MAGIC };
-    uint32_t sampleRate { 44100 };
-    uint16_t numChannels { 2 };
-    uint32_t numSamples { 0 };
-    uint64_t timestamp { 0 };
-    uint32_t sequenceNumber { 0 };
+    // Daten Felder
+    uint32_t magic = MAGIC;
+    uint32_t sampleRate = 44100;
+    uint16_t numChannels = 2;
+    uint32_t numSamples = 0;
+    uint64_t timestamp = 0;
+    uint32_t sequenceNumber = 0;
     std::vector<float> audioData;
     
-    /** Calculate total packet size in bytes */
-    [[nodiscard]] size_t getTotalSize() const noexcept
+    // Größe berechnen
+    size_t getTotalSize()
     {
         return HEADER_SIZE + (audioData.size() * sizeof(float));
     }
     
-    /** Serialize packet to byte buffer for network transmission */
-    [[nodiscard]] std::vector<uint8_t> serialize() const
+    // In Bytes umwandeln zum versenden
+    std::vector<uint8_t> serialize()
     {
         std::vector<uint8_t> buffer(getTotalSize());
         size_t offset = 0;
         
-        // Write header fields
+        // Header reinschreiben
+        // memcpy ist einfachste lösung
         std::memcpy(buffer.data() + offset, &magic, sizeof(magic));
         offset += sizeof(magic);
         
@@ -63,8 +56,8 @@ struct AudioPacket
         std::memcpy(buffer.data() + offset, &sequenceNumber, sizeof(sequenceNumber));
         offset += sizeof(sequenceNumber);
         
-        // Write audio data
-        if (!audioData.empty())
+        // Audio daten kopieren
+        if (audioData.size() > 0)
         {
             std::memcpy(buffer.data() + offset, audioData.data(), 
                        audioData.size() * sizeof(float));
@@ -73,7 +66,7 @@ struct AudioPacket
         return buffer;
     }
     
-    /** Deserialize packet from byte buffer */
+    // Aus Bytes wieder Paket machen
     static bool deserialize(const uint8_t* data, size_t size, AudioPacket& outPacket)
     {
         if (size < HEADER_SIZE)
@@ -81,6 +74,7 @@ struct AudioPacket
         
         size_t offset = 0;
         
+        // Alles wieder rauslesen
         std::memcpy(&outPacket.magic, data + offset, sizeof(outPacket.magic));
         offset += sizeof(outPacket.magic);
         
@@ -102,9 +96,9 @@ struct AudioPacket
         std::memcpy(&outPacket.sequenceNumber, data + offset, sizeof(outPacket.sequenceNumber));
         offset += sizeof(outPacket.sequenceNumber);
         
-        // Read audio data
-        const size_t audioBytes = size - HEADER_SIZE;
-        const size_t numFloats = audioBytes / sizeof(float);
+        // Audio Samples holen
+        size_t audioBytes = size - HEADER_SIZE;
+        size_t numFloats = audioBytes / sizeof(float);
         
         if (numFloats > 0)
         {
@@ -115,23 +109,24 @@ struct AudioPacket
         return true;
     }
     
-    /** Set audio data from JUCE buffer (interleaved) */
+    // Helper um JUCE Buffer daten zu übernehmen
     void setFromBuffer(const float* const* channelData, int numChannelsIn, 
                        int numSamplesIn, uint32_t sampleRateIn)
     {
         sampleRate = sampleRateIn;
-        numChannels = static_cast<uint16_t>(numChannelsIn);
-        numSamples = static_cast<uint32_t>(numSamplesIn);
+        numChannels = (uint16_t)numChannelsIn;
+        numSamples = (uint32_t)numSamplesIn;
         
-        // Interleave audio data
-        audioData.resize(static_cast<size_t>(numChannelsIn) * numSamplesIn);
+        // Größe anpassen
+        audioData.resize(numChannelsIn * numSamplesIn);
         
+        // Interleaved speichern (L R L R L R)
         for (int sample = 0; sample < numSamplesIn; ++sample)
         {
             for (int channel = 0; channel < numChannelsIn; ++channel)
             {
-                audioData[static_cast<size_t>(sample * numChannelsIn + channel)] = 
-                    channelData[channel][sample];
+                int index = sample * numChannelsIn + channel;
+                audioData[index] = channelData[channel][sample];
             }
         }
     }

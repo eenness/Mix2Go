@@ -6,16 +6,11 @@
 namespace mix2go {
 namespace streaming {
 
-/**
- * Network sender for UDP audio streaming.
- * 
- * Runs in a separate thread, reads from a callback and sends
- * packets to the configured target address.
- */
+// Thread der das Netzwerk zeug macht
+// Sendet UDP Pakete im Hintergrund
 class NetworkSender : public juce::Thread
 {
 public:
-    /** Callback to get audio data for sending */
     using AudioDataCallback = std::function<bool(AudioPacket&)>;
     
     NetworkSender()
@@ -28,84 +23,71 @@ public:
         stop();
     }
     
-    /** Configure target address and port */
-    void setTarget(const juce::String& ipAddress, int port)
+    // Zieladresse setzen
+    void setTarget(juce::String ipAddress, int port)
     {
         juce::ScopedLock lock(m_settingsLock);
         m_targetIP = ipAddress;
         m_targetPort = port;
     }
     
-    /** Set the callback that provides audio packets */
+    // Callback speichern
     void setAudioCallback(AudioDataCallback callback)
     {
-        m_audioCallback = std::move(callback);
+        m_audioCallback = callback;
     }
     
-    /** Set how often to send packets (in milliseconds) */
+    // Interval ändern
     void setSendInterval(int intervalMs)
     {
-        m_sendIntervalMs.store(intervalMs, std::memory_order_relaxed);
+        m_sendIntervalMs = intervalMs;
     }
     
-    /** Start the sender thread */
     bool start()
     {
         if (isThreadRunning())
             return true;
             
-        m_shouldStop.store(false);
+        m_shouldStop = false;
         
-        // Create UDP socket
+        // Socket bauen
         m_socket = std::make_unique<juce::DatagramSocket>();
         
-        if (!m_socket->bindToPort(0)) // Bind to any available port
+        if (!m_socket->bindToPort(0)) // random port ist ok
         {
-            DBG("NetworkSender: Failed to bind socket");
-            m_lastError = "Failed to bind socket";
+            DBG("Fehler: Socket Bind geht nicht");
             return false;
         }
         
-        startThread(juce::Thread::Priority::normal);
+        startThread();
         return true;
     }
     
-    /** Stop the sender thread */
     void stop()
     {
-        m_shouldStop.store(true);
+        m_shouldStop = true;
         
         if (isThreadRunning())
         {
-            stopThread(2000); // Wait up to 2 seconds
+            stopThread(2000);
         }
         
         m_socket.reset();
     }
     
-    /** Check if currently connected/sending */
-    [[nodiscard]] bool isActive() const noexcept
+    bool isActive()
     {
-        return isThreadRunning() && !m_shouldStop.load();
+        return isThreadRunning() && !m_shouldStop;
     }
     
-    /** Get last error message */
-    [[nodiscard]] juce::String getLastError() const
+    uint64_t getPacketsSent()
     {
-        juce::ScopedLock lock(m_settingsLock);
-        return m_lastError;
+        return m_packetsSent;
     }
     
-    /** Get total packets sent */
-    [[nodiscard]] uint64_t getPacketsSent() const noexcept
+    uint64_t getBytesSent()
     {
-        return m_packetsSent.load(std::memory_order_relaxed);
-    }
-    
-    /** Get total bytes sent */
-    [[nodiscard]] uint64_t getBytesSent() const noexcept
-    {
-        return m_bytesSent.load(std::memory_order_relaxed);
+        return m_bytesSent;
     }
     
 private:
@@ -120,57 +102,57 @@ private:
             targetPort = m_targetPort;
         }
         
-        DBG("NetworkSender: Starting to send to " << targetIP << ":" << targetPort);
+        DBG("Sender läuft. Ziel: " << targetIP << ":" << targetPort);
         
-        while (!threadShouldExit() && !m_shouldStop.load())
+        while (!threadShouldExit() && !m_shouldStop)
         {
             AudioPacket packet;
             
-            // Get audio data from callback
+            // Daten holen
             if (m_audioCallback && m_audioCallback(packet))
             {
-                // Serialize and send
+                // Packet fertig machen und senden
                 auto data = packet.serialize();
                 
-                const int bytesSent = m_socket->write(
+                int bytesSent = m_socket->write(
                     targetIP, targetPort,
-                    data.data(), static_cast<int>(data.size())
+                    data.data(), (int)data.size()
                 );
                 
                 if (bytesSent > 0)
                 {
-                    m_packetsSent.fetch_add(1, std::memory_order_relaxed);
-                    m_bytesSent.fetch_add(static_cast<uint64_t>(bytesSent), 
-                                          std::memory_order_relaxed);
+                    m_packetsSent++;
+                    m_bytesSent += bytesSent;
                 }
                 else
                 {
-                    juce::ScopedLock lock(m_settingsLock);
-                    m_lastError = "Send failed";
+                    DBG("Send failed");
                 }
             }
             
-            // Sleep to control send rate
-            const int sleepMs = m_sendIntervalMs.load(std::memory_order_relaxed);
+            // Kurz warten damit wir nicht 100% CPU brauchen
+            int sleepMs = m_sendIntervalMs;
             if (sleepMs > 0)
             {
                 juce::Thread::sleep(sleepMs);
             }
         }
         
-        DBG("NetworkSender: Stopped");
+        DBG("Sender gestoppt");
     }
     
     std::unique_ptr<juce::DatagramSocket> m_socket;
     AudioDataCallback m_audioCallback;
     
-    mutable juce::CriticalSection m_settingsLock;
-    juce::String m_targetIP { "127.0.0.1" };
-    int m_targetPort { 12345 };
-    juce::String m_lastError;
+    juce::CriticalSection m_settingsLock;
+    juce::String m_targetIP = "127.0.0.1";
+    int m_targetPort = 12345;
     
-    std::atomic<bool> m_shouldStop { false };
-    std::atomic<int> m_sendIntervalMs { 10 }; // ~100 packets/sec default
+    // simple state variables
+    bool m_shouldStop = false;
+    int m_sendIntervalMs = 10;
+    
+    // stats
     std::atomic<uint64_t> m_packetsSent { 0 };
     std::atomic<uint64_t> m_bytesSent { 0 };
     
