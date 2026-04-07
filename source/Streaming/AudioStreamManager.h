@@ -145,23 +145,10 @@ public:
     {
         if (!m_isStreaming)
             return;
-        
-        // Check ob Stille ist (Magnitude)
-        float maxLevel = 0.0f;
-        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-        {
-            float chLevel = buffer.getMagnitude(ch, 0, buffer.getNumSamples());
-            if (chLevel > maxLevel) maxLevel = chLevel;
-        }
-        
-        // Wenn zu leise, dann nix senden
-        if (maxLevel < 0.001f) // -60dB ca
-        {
-            m_silentBlocks++;
-            return; 
-        }
-        
-        m_silentBlocks = 0;
+
+        // Push immer wenn streaming läuft - kein Silence-Gate.
+        // Das FIFO schickt dann auch Stille, damit der Empfänger
+        // einen kontinuierlichen Datenstrom bekommt.
         m_fifo.push(buffer);
     }
     

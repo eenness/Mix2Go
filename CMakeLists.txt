@@ -12,7 +12,7 @@ project(Mix2Go VERSION 0.0.1)
 add_subdirectory(modules/JUCE)
 
 # Project configuration
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)   # matches cxx_std_20 required by SharedCode
 
 # macOS-specific settings
 if(APPLE)

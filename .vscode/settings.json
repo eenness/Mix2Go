@@ -1,0 +1,31 @@
+{
+    // CMake build directory - keep all generated files here
+    "cmake.buildDirectory": "${workspaceFolder}/build",
+
+    // Use Ninja for fast incremental builds with MSVC
+    "cmake.generator": "Ninja",
+
+    // Build type - use Debug for development (enables DBG() output)
+    // Switch to Release before giving the VST3 to FL Studio for performance
+    "cmake.buildType": "Debug",
+
+    // Auto-configure when you open the folder
+    "cmake.configureOnOpen": true,
+
+    // Use all available CPU cores for builds
+    "cmake.parallelJobs": 0,
+
+    // Export compile_commands.json for IntelliSense
+    "cmake.exportCompileCommandsFile": true,
+
+    // Let cmake-tools drive IntelliSense so it picks up JUCE include paths
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+
+    // IMPORTANT: After deleting the build/ folder you must select the correct kit.
+    // Press Ctrl+Shift+P -> "CMake: Select a Kit" and choose:
+    //   "Visual Studio Build Tools 2022 - amd64"  (or "MSVC ... amd64" variant)
+    // Do NOT select an x86 kit - FL Studio requires a 64-bit (amd64) VST3.
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ]
+}

@@ -123,10 +123,17 @@ private:
                 {
                     m_packetsSent++;
                     m_bytesSent += bytesSent;
+
+                    // Log every 100 packets so we can see traffic in the debugger
+                    if ((m_packetsSent % 100) == 0)
+                        DBG("[Mix2Go] UDP sent " << (int)m_packetsSent
+                            << " packets (" << (int)(m_bytesSent / 1024) << " KB)"
+                            << " -> " << targetIP << ":" << targetPort);
                 }
                 else
                 {
-                    DBG("Send failed");
+                    DBG("[Mix2Go] UDP write() failed (bytesSent=" << bytesSent
+                        << ") -> " << targetIP << ":" << targetPort);
                 }
             }
             
