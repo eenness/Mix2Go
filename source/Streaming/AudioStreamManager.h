@@ -60,11 +60,16 @@ public:
         int fifoSize = (int)sampleRate * 2;
         m_fifo.prepare(numChannels, fifoSize);
         
-        // Packet Größe: ca 10ms Audio pro Paket senden
-        m_packetSamples = (int)(sampleRate * 0.01);
-        
-        DBG("Manager Prepared: SR=" << sampleRate 
-            << " PacketSamples=" << m_packetSamples);
+        // Packet Größe: ca 5ms Audio pro Paket senden
+        // Kleinere Pakete bleiben unter 1200 Bytes und werden nicht fragmentiert
+        m_packetSamples = (int)(sampleRate * 0.005);
+
+        // Send-Interval muss zur Paketgröße passen: 1 Paket alle 5ms
+        m_sender.setSendInterval(5);
+
+        DBG("Manager Prepared: SR=" << sampleRate
+            << " PacketSamples=" << m_packetSamples
+            << " (~" << (int)(m_packetSamples * 2 * 2 + (int)AudioPacket::HEADER_SIZE) << " bytes/pkt)");
     }
     
     // IP setzen
@@ -203,6 +208,15 @@ private:
     // Wird vom Network Thread aufgerufen
     bool fillPacketFromFIFO(AudioPacket& packet)
     {
+        // Check for new overruns since last call — safe to log here (network thread)
+        auto overruns = m_fifo.getOverrunCount();
+        if (overruns > m_lastLoggedOverruns)
+        {
+            DBG("[Mix2Go] FIFO overrun! total=" << (int)overruns
+                << " (+" << (int)(overruns - m_lastLoggedOverruns) << " new)");
+            m_lastLoggedOverruns = overruns;
+        }
+
         if (m_fifo.getNumReady() < m_packetSamples)
             return false;
             
@@ -243,6 +257,7 @@ private:
     std::atomic<int> m_silentBlocks { 0 };
     uint32_t m_sequenceNumber = 0;
     juce::int64 m_streamStartTime = 0;
+    uint64_t m_lastLoggedOverruns = 0;
     
     juce::CriticalSection m_listenerLock;
     juce::Array<StreamListener*> m_listeners;
