@@ -47,18 +47,21 @@ public:
     {
         if (isThreadRunning())
             return true;
-            
+
         m_shouldStop = false;
-        
+        m_lastLogTime     = juce::Time::getHighResolutionTicks();
+        m_lastLogPackets  = 0;
+        m_lastLogBytes    = 0;
+
         // Socket bauen
         m_socket = std::make_unique<juce::DatagramSocket>();
-        
+
         if (!m_socket->bindToPort(0)) // random port ist ok
         {
-            DBG("Fehler: Socket Bind geht nicht");
+            DBG("[Mix2Go] Fehler: Socket Bind geht nicht");
             return false;
         }
-        
+
         startThread();
         return true;
     }
@@ -124,11 +127,26 @@ private:
                     m_packetsSent++;
                     m_bytesSent += bytesSent;
 
-                    // Log every 100 packets so we can see traffic in the debugger
+                    // Log every 100 packets with pkt/s and kbps rates
                     if ((m_packetsSent % 100) == 0)
-                        DBG("[Mix2Go] UDP sent " << (int)m_packetsSent
-                            << " packets (" << (int)(m_bytesSent / 1024) << " KB)"
-                            << " -> " << targetIP << ":" << targetPort);
+                    {
+                        auto now        = juce::Time::getHighResolutionTicks();
+                        double elapsedMs = (double)(now - m_lastLogTime)
+                                           / (juce::Time::getHighResolutionTicksPerSecond() / 1000.0);
+                        int pps  = (elapsedMs > 0) ? (int)((m_packetsSent - m_lastLogPackets) * 1000.0 / elapsedMs) : 0;
+                        int kbps = (elapsedMs > 0) ? (int)((m_bytesSent   - m_lastLogBytes)   * 8.0    / elapsedMs) : 0;
+
+                        DBG("[Mix2Go] UDP: " << (int)m_packetsSent << " pkts"
+                            << "  " << pps  << " pkt/s"
+                            << "  " << kbps << " kbps"
+                            << "  pktSize=" << bytesSent << " bytes"
+                            << "  total=" << (int)(m_bytesSent / 1024) << " KB"
+                            << "  -> " << targetIP << ":" << targetPort);
+
+                        m_lastLogTime    = now;
+                        m_lastLogPackets = m_packetsSent;
+                        m_lastLogBytes   = m_bytesSent;
+                    }
                 }
                 else
                 {
@@ -161,7 +179,12 @@ private:
     
     // stats
     std::atomic<uint64_t> m_packetsSent { 0 };
-    std::atomic<uint64_t> m_bytesSent { 0 };
+    std::atomic<uint64_t> m_bytesSent   { 0 };
+
+    // rate tracking for periodic log
+    juce::int64  m_lastLogTime    = 0;
+    uint64_t     m_lastLogPackets = 0;
+    uint64_t     m_lastLogBytes   = 0;
     
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NetworkSender)
 };

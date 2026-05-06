@@ -91,23 +91,49 @@ public:
     {
         if (m_state == StreamState::Streaming)
             return true;
-            
+
+        if (m_targetIP.isEmpty() || m_targetIP == "0.0.0.0")
+        {
+            DBG("[Mix2Go] startStreaming() aborted: no target IP set");
+            setState(StreamState::Error);
+            return false;
+        }
+
         setState(StreamState::Connecting);
-        
+
         m_fifo.reset();
         m_sequenceNumber = 0;
+        m_networkUnderruns = 0;
         m_streamStartTime = juce::Time::getHighResolutionTicks();
-        
+
         if (!m_sender.start())
         {
             setState(StreamState::Error);
             return false;
         }
-        
+
         m_isStreaming = true;
         setState(StreamState::Streaming);
-        
-        DBG("Streaming started!");
+
+        const int packetBytes = (int)(AudioPacket::HEADER_SIZE
+                                      + m_packetSamples * m_numChannels * (int)sizeof(int16_t));
+        const int pps         = (m_packetSamples > 0)
+                                  ? (int)juce::roundToInt(m_sampleRate / m_packetSamples)
+                                  : 0;
+        const int kbps        = packetBytes * pps * 8 / 1000;
+
+        DBG("[Mix2Go] === Streaming Started =========================");
+        DBG("[Mix2Go]   Format:           28-byte header + PCM16 payload");
+        DBG("[Mix2Go]   Target:           " << m_targetIP << ":" << m_targetPort);
+        DBG("[Mix2Go]   SampleRate:       " << (int)m_sampleRate << " Hz");
+        DBG("[Mix2Go]   Channels:         " << m_numChannels);
+        DBG("[Mix2Go]   SamplesPerPacket: " << m_packetSamples);
+        DBG("[Mix2Go]   PacketSize:       " << packetBytes << " bytes  (MTU safe: " << (packetBytes < 1200 ? "YES" : "NO") << ")");
+        DBG("[Mix2Go]   PacketInterval:   5 ms");
+        DBG("[Mix2Go]   PacketsPerSec:    ~" << pps);
+        DBG("[Mix2Go]   Bitrate:          ~" << kbps << " kbps");
+        DBG("[Mix2Go] =====================================================");
+
         return true;
     }
     
@@ -121,7 +147,7 @@ public:
         DBG("Streaming stopped");
     }
     
-    bool isStreaming()
+    bool isStreaming() const
     {
         return m_isStreaming;
     }
@@ -208,36 +234,57 @@ private:
     // Wird vom Network Thread aufgerufen
     bool fillPacketFromFIFO(AudioPacket& packet)
     {
-        // Check for new overruns since last call — safe to log here (network thread)
+        // Log new overruns
         auto overruns = m_fifo.getOverrunCount();
         if (overruns > m_lastLoggedOverruns)
         {
             DBG("[Mix2Go] FIFO overrun! total=" << (int)overruns
-                << " (+" << (int)(overruns - m_lastLoggedOverruns) << " new)");
+                << " (+" << (int)(overruns - m_lastLoggedOverruns) << " new)"
+                << "  fifoLevel=" << m_fifo.getNumReady());
             m_lastLoggedOverruns = overruns;
         }
 
+        // Not enough samples yet — network thread polls faster than audio fills
         if (m_fifo.getNumReady() < m_packetSamples)
+        {
+            ++m_networkUnderruns;
+            // Log first underrun, then every 200 (roughly every second at 200 pkt/s)
+            if (m_networkUnderruns == 1 || (m_networkUnderruns % 200) == 0)
+                DBG("[Mix2Go] FIFO underrun (net thread): ready=" << m_fifo.getNumReady()
+                    << " needed=" << m_packetSamples
+                    << " total=" << (int)m_networkUnderruns);
             return false;
-            
+        }
+
         // Temp Buffer
         juce::AudioBuffer<float> tempBuffer(m_numChannels, m_packetSamples);
-        
+
         if (!m_fifo.pop(tempBuffer, m_packetSamples))
             return false;
-        
+
         // Paket füllen
-        packet.setFromBuffer(tempBuffer.getArrayOfReadPointers(), 
-                            m_numChannels, m_packetSamples,
-                            (uint32_t)m_sampleRate);
-        
+        packet.setFromBuffer(tempBuffer.getArrayOfReadPointers(),
+                             m_numChannels, m_packetSamples,
+                             (uint32_t)m_sampleRate);
+
         // Zeitstempel berechnen
         double ticksPerMicrosecond = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
         auto ticksSinceStart = juce::Time::getHighResolutionTicks() - m_streamStartTime;
-        
-        packet.timestamp = (uint64_t)(ticksSinceStart / ticksPerMicrosecond);
+
+        packet.timestamp      = (uint64_t)(ticksSinceStart / ticksPerMicrosecond);
         packet.sequenceNumber = m_sequenceNumber++;
-        
+
+        // Periodic stats — every 200 packets (~1 second at 200 pkt/s)
+        if ((m_sequenceNumber % 200) == 0)
+        {
+            DBG("[Mix2Go] Stats: seq=" << m_sequenceNumber
+                << "  sent=" << (int)m_sender.getPacketsSent()
+                << "  fifoLevel=" << m_fifo.getNumReady()
+                << "  overruns=" << (int)m_fifo.getOverrunCount()
+                << "  netUnderruns=" << (int)m_networkUnderruns
+                << "  KB=" << (int)(m_sender.getBytesSent() / 1024));
+        }
+
         return true;
     }
     
@@ -259,9 +306,11 @@ private:
     juce::int64 m_streamStartTime = 0;
     uint64_t m_lastLoggedOverruns = 0;
     
+    uint64_t m_networkUnderruns = 0;
+
     juce::CriticalSection m_listenerLock;
     juce::Array<StreamListener*> m_listeners;
-    
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioStreamManager)
 };
 
