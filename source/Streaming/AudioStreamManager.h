@@ -249,16 +249,27 @@ private:
             m_lastLoggedOverruns = overruns;
         }
 
-        // Not enough samples yet — network thread polls faster than audio fills
+        // Not enough samples yet — send a silence packet to keep sequence numbers
+        // continuous. Skipping (return false) would create a seq-number gap that
+        // the receiver treats as packet loss → silence injected on their side too.
         if (m_fifo.getNumReady() < m_packetSamples)
         {
             ++m_networkUnderruns;
-            // Log first underrun, then every 200 (roughly every second at 200 pkt/s)
             if (m_networkUnderruns == 1 || (m_networkUnderruns % 200) == 0)
                 DBG("[Mix2Go] FIFO underrun (net thread): ready=" << m_fifo.getNumReady()
                     << " needed=" << m_packetSamples
                     << " total=" << (int)m_networkUnderruns);
-            return false;
+
+            // Fill packet with silence and send it — seq number stays continuous
+            packet.sampleRate  = (uint32_t)m_sampleRate;
+            packet.numChannels = (uint16_t)m_numChannels;
+            packet.numSamples  = (uint32_t)m_packetSamples;
+            packet.pcmData.assign((size_t)(m_numChannels * m_packetSamples), 0);
+
+            double ticksPerUs  = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
+            packet.timestamp   = (uint64_t)((juce::Time::getHighResolutionTicks() - m_streamStartTime) / ticksPerUs);
+            packet.sequenceNumber = m_sequenceNumber++;
+            return true;
         }
 
         // Temp Buffer
