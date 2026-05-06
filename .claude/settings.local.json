@@ -3,7 +3,8 @@
     "allow": [
       "WebFetch(domain:api.github.com)",
       "PowerShell(cmd /c \"call `\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\18\\\\BuildTools\\\\VC\\\\Auxiliary\\\\Build\\\\vcvarsall.bat`\" x64 && cmake --build `\"C:\\\\Users\\\\karak\\\\Documents\\\\Diplomarbeit\\\\Mix2Go\\\\build`\" 2>&1\")",
-      "Bash(curl -s https://raw.githubusercontent.com/aksoya19/Mix2Go/main/udp_audio_mix2go/lib/network/udp_receiver.dart)"
+      "Bash(curl -s https://raw.githubusercontent.com/aksoya19/Mix2Go/main/udp_audio_mix2go/lib/network/udp_receiver.dart)",
+      "PowerShell(cmd /c dir \"C:\\\\Program Files\\\\Common Files\\\\VST3\\\\Mix2Go.vst3\\\\Contents\\\\x86_64-win\\\\Mix2Go.vst3\")"
     ]
   }
 }

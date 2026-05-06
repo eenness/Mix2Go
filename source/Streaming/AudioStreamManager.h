@@ -64,8 +64,13 @@ public:
         // Kleinere Pakete bleiben unter 1200 Bytes und werden nicht fragmentiert
         m_packetSamples = (int)(sampleRate * 0.005);
 
-        // Send-Interval muss zur Paketgröße passen: 1 Paket alle 5ms
-        m_sender.setSendInterval(5);
+        // Exaktes Interval berechnen: packetSamples / sampleRate * 1000ms
+        // z.B. 220 / 44100 * 1000 = 4.9887ms (NICHT 5ms!)
+        // Mit 5ms würden wir nur 44000 samples/s statt 44100 senden → Buffer läuft leer
+        double exactIntervalMs = (m_packetSamples > 0)
+                                     ? (double)m_packetSamples / sampleRate * 1000.0
+                                     : 5.0;
+        m_sender.setSendInterval(exactIntervalMs);
 
         DBG("Manager Prepared: SR=" << sampleRate
             << " PacketSamples=" << m_packetSamples

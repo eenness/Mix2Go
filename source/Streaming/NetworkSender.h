@@ -3,6 +3,15 @@
 #include <juce_core/juce_core.h>
 #include "AudioPacket.h"
 
+#if JUCE_WINDOWS
+ // Forward-declare winmm timer functions to avoid Windows header conflicts
+ extern "C" {
+     __declspec(dllimport) unsigned long __stdcall timeBeginPeriod(unsigned int uPeriod);
+     __declspec(dllimport) unsigned long __stdcall timeEndPeriod(unsigned int uPeriod);
+ }
+ #pragma comment(lib, "winmm.lib")
+#endif
+
 namespace mix2go {
 namespace streaming {
 
@@ -37,8 +46,8 @@ public:
         m_audioCallback = callback;
     }
     
-    // Interval ändern
-    void setSendInterval(int intervalMs)
+    // Interval ändern (double für sample-genaue Berechnung, z.B. 4.9887ms)
+    void setSendInterval(double intervalMs)
     {
         m_sendIntervalMs = intervalMs;
     }
@@ -106,33 +115,42 @@ private:
         }
         
         DBG("Sender läuft. Ziel: " << targetIP << ":" << targetPort);
-        
+
+        // Windows-Timer auf 1ms stellen damit sleep() genau ist
+        #if JUCE_WINDOWS
+        timeBeginPeriod(1);
+        #endif
+
+        const double ticksPerSec = (double)juce::Time::getHighResolutionTicksPerSecond();
+        const double ticksPerMs  = ticksPerSec / 1000.0;
+
+        // Absolutes Scheduling: nächsten Send-Zeitpunkt vorausberechnen
+        // Fehler akkumulieren sich NICHT über Zeit → kein systematischer Drift
+        const juce::int64 intervalTicks = (juce::int64)(m_sendIntervalMs * ticksPerMs);
+        juce::int64 nextSendTick = juce::Time::getHighResolutionTicks() + intervalTicks;
+
         while (!threadShouldExit() && !m_shouldStop)
         {
             AudioPacket packet;
-            
-            // Daten holen
+
             if (m_audioCallback && m_audioCallback(packet))
             {
-                // Packet fertig machen und senden
                 auto data = packet.serialize();
-                
+
                 int bytesSent = m_socket->write(
                     targetIP, targetPort,
                     data.data(), (int)data.size()
                 );
-                
+
                 if (bytesSent > 0)
                 {
                     m_packetsSent++;
                     m_bytesSent += bytesSent;
 
-                    // Log every 100 packets with pkt/s and kbps rates
                     if ((m_packetsSent % 100) == 0)
                     {
-                        auto now        = juce::Time::getHighResolutionTicks();
-                        double elapsedMs = (double)(now - m_lastLogTime)
-                                           / (juce::Time::getHighResolutionTicksPerSecond() / 1000.0);
+                        auto now         = juce::Time::getHighResolutionTicks();
+                        double elapsedMs = (double)(now - m_lastLogTime) / ticksPerMs;
                         int pps  = (elapsedMs > 0) ? (int)((m_packetsSent - m_lastLogPackets) * 1000.0 / elapsedMs) : 0;
                         int kbps = (elapsedMs > 0) ? (int)((m_bytesSent   - m_lastLogBytes)   * 8.0    / elapsedMs) : 0;
 
@@ -154,15 +172,29 @@ private:
                         << ") -> " << targetIP << ":" << targetPort);
                 }
             }
-            
-            // Kurz warten damit wir nicht 100% CPU brauchen
-            int sleepMs = m_sendIntervalMs;
-            if (sleepMs > 0)
+
+            // Absolutes Timing: schlafen bis zum nächsten geplanten Zeitpunkt
+            auto now      = juce::Time::getHighResolutionTicks();
+            auto remaining = nextSendTick - now;
+            if (remaining > 0)
             {
-                juce::Thread::sleep(sleepMs);
+                int sleepMs = (int)(remaining / ticksPerMs);
+                if (sleepMs > 0)
+                    juce::Thread::sleep(sleepMs);
             }
+            else if (remaining < -intervalTicks * 3)
+            {
+                // Mehr als 3 Intervalle hinter Zeitplan: Uhr zurücksetzen
+                // (passiert z.B. beim Start oder nach System-Sleep)
+                nextSendTick = now;
+            }
+            nextSendTick += intervalTicks;
         }
-        
+
+        #if JUCE_WINDOWS
+        timeEndPeriod(1);
+        #endif
+
         DBG("Sender gestoppt");
     }
     
@@ -175,7 +207,7 @@ private:
     
     // simple state variables
     bool m_shouldStop = false;
-    int m_sendIntervalMs = 10;
+    double m_sendIntervalMs = 10.0;
     
     // stats
     std::atomic<uint64_t> m_packetsSent { 0 };
