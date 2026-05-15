@@ -137,17 +137,15 @@ struct AudioPacket
         pcmData.resize(numChannelsIn * numSamplesIn);
 
         // Interleaved speichern (L R L R ...) mit float → int16 Konvertierung
-        // Soft-Limiter via tanh: verhindert hartes Clipping bei Pegeln über 0 dBFS.
-        // tanh(x) ≈ x für |x| < 0.7, biegt dann sanft zur ±1 Grenze.
-        // Danach skalieren auf den vollen int16-Bereich [-32768, 32767].
+        // Hard-clip bei ±1.0 — bei korrekt gain-gestuftem DAW-Signal (≤ 0 dBFS)
+        // wird dieser Pfad nie betreten. Keine Sättigung/Verzerrung bei normalen Pegeln.
         for (int sample = 0; sample < numSamplesIn; ++sample)
         {
             for (int channel = 0; channel < numChannelsIn; ++channel)
             {
                 float s = channelData[channel][sample];
-                // Soft-limit: tanh begrenzt sanft auf (-1, 1), kein harter Sprung
-                s = std::tanh(s);
-                // int16 skalieren: negative Seite nutzt -32768 voll aus
+                if (s >  1.0f) s =  1.0f;
+                if (s < -1.0f) s = -1.0f;
                 pcmData[sample * numChannelsIn + channel] =
                     static_cast<int16_t>(s * (s < 0.0f ? 32768.0f : 32767.0f));
             }
