@@ -5,6 +5,7 @@
 #include "AudioPacket.h"
 #include "ThreadSafeFIFO.h"
 #include "NetworkSender.h"
+#include "OpusEncoder.h"
 
 namespace mix2go {
 namespace streaming {
@@ -34,9 +35,8 @@ class AudioStreamManager
 public:
     AudioStreamManager()
     {
-        // Callback setzen
-        m_sender.setAudioCallback([this](AudioPacket& packet) {
-            return fillPacketFromFIFO(packet);
+        m_sender.setAudioCallback([this](std::vector<uint8_t>& outBytes) {
+            return fillPacketFromFIFO(outBytes);
         });
     }
     
@@ -55,26 +55,25 @@ public:
         m_sampleRate = sampleRate;
         m_samplesPerBlock = samplesPerBlock;
         m_numChannels = numChannels;
-        
-        // FIFO Größe für ca 1 Sekunde Puffer
-        int fifoSize = (int)sampleRate * 2;
-        m_fifo.prepare(numChannels, fifoSize);
-        
-        // Packet Größe: ca 5ms Audio pro Paket senden
-        // Kleinere Pakete bleiben unter 1200 Bytes und werden nicht fragmentiert
-        m_packetSamples = (int)(sampleRate * 0.005);
 
-        // Exaktes Interval berechnen: packetSamples / sampleRate * 1000ms
-        // z.B. 220 / 44100 * 1000 = 4.9887ms (NICHT 5ms!)
-        // Mit 5ms würden wir nur 44000 samples/s statt 44100 senden → Buffer läuft leer
-        double exactIntervalMs = (m_packetSamples > 0)
-                                     ? (double)m_packetSamples / sampleRate * 1000.0
-                                     : 5.0;
+        // Prepare Opus encoder: 10ms frames (480 samples @ 48kHz)
+        m_opusEncoder.prepare(sampleRate, numChannels);
+
+        // Input samples per Opus frame after resampling from DAW rate → 48kHz
+        m_packetSamples = m_opusEncoder.getInputSamplesPerFrame();
+
+        // FIFO: 500ms headroom is more than enough
+        int fifoSize = (int)(sampleRate * 0.5);
+        m_fifo.prepare(numChannels, fifoSize);
+
+        // Send interval matches exactly one Opus input frame at DAW sample rate
+        double exactIntervalMs = (double)m_packetSamples / sampleRate * 1000.0;
         m_sender.setSendInterval(exactIntervalMs);
 
-        DBG("Manager Prepared: SR=" << sampleRate
-            << " PacketSamples=" << m_packetSamples
-            << " (~" << (int)(m_packetSamples * 2 * 2 + (int)AudioPacket::HEADER_SIZE) << " bytes/pkt)");
+        DBG("[Mix2Go] Manager Prepared (Opus v2): SR=" << (int)sampleRate
+            << " OpusFrameSamples=" << m_opusEncoder.getFrameSize()
+            << " InputSamples=" << m_packetSamples
+            << " Interval=" << exactIntervalMs << "ms");
     }
     
     // IP setzen
@@ -107,6 +106,7 @@ public:
         setState(StreamState::Connecting);
 
         m_fifo.reset();
+        m_opusEncoder.reset();
         m_sequenceNumber = 0;
         m_networkUnderruns = 0;
         m_streamStartTime = juce::Time::getHighResolutionTicks();
@@ -120,23 +120,19 @@ public:
         m_isStreaming = true;
         setState(StreamState::Streaming);
 
-        const int packetBytes = (int)(AudioPacket::HEADER_SIZE
-                                      + m_packetSamples * m_numChannels * (int)sizeof(int16_t));
-        const int pps         = (m_packetSamples > 0)
-                                  ? (int)juce::roundToInt(m_sampleRate / m_packetSamples)
-                                  : 0;
-        const int kbps        = packetBytes * pps * 8 / 1000;
+        const int pps = (m_packetSamples > 0)
+                          ? (int)juce::roundToInt(m_sampleRate / m_packetSamples)
+                          : 0;
 
-        DBG("[Mix2Go] === Streaming Started =========================");
-        DBG("[Mix2Go]   Format:           28-byte header + PCM16 payload");
+        DBG("[Mix2Go] === Streaming Started (Opus v2) ==================");
+        DBG("[Mix2Go]   Format:           28-byte v2 header + Opus payload");
         DBG("[Mix2Go]   Target:           " << m_targetIP << ":" << m_targetPort);
-        DBG("[Mix2Go]   SampleRate:       " << (int)m_sampleRate << " Hz");
+        DBG("[Mix2Go]   DAW SampleRate:   " << (int)m_sampleRate << " Hz → resampled to 48000 Hz");
         DBG("[Mix2Go]   Channels:         " << m_numChannels);
-        DBG("[Mix2Go]   SamplesPerPacket: " << m_packetSamples);
-        DBG("[Mix2Go]   PacketSize:       " << packetBytes << " bytes  (MTU safe: " << (packetBytes < 1200 ? "YES" : "NO") << ")");
-        DBG("[Mix2Go]   PacketInterval:   5 ms");
+        DBG("[Mix2Go]   OpusFrameSize:    " << m_opusEncoder.getFrameSize() << " samples (10ms)");
+        DBG("[Mix2Go]   InputSamples:     " << m_packetSamples << " per frame");
         DBG("[Mix2Go]   PacketsPerSec:    ~" << pps);
-        DBG("[Mix2Go]   Bitrate:          ~" << kbps << " kbps");
+        DBG("[Mix2Go]   Bitrate (Opus):   128 kbps");
         DBG("[Mix2Go] =====================================================");
 
         return true;
@@ -236,10 +232,9 @@ private:
         }
     }
     
-    // Wird vom Network Thread aufgerufen
-    bool fillPacketFromFIFO(AudioPacket& packet)
+    // Called from network thread: pop one Opus frame from FIFO, encode, build v2 packet.
+    bool fillPacketFromFIFO(std::vector<uint8_t>& outBytes)
     {
-        // Log new overruns
         auto overruns = m_fifo.getOverrunCount();
         if (overruns > m_lastLoggedOverruns)
         {
@@ -249,51 +244,39 @@ private:
             m_lastLoggedOverruns = overruns;
         }
 
-        // Not enough samples yet — send a silence packet to keep sequence numbers
-        // continuous. Skipping (return false) would create a seq-number gap that
-        // the receiver treats as packet loss → silence injected on their side too.
-        if (m_fifo.getNumReady() < m_packetSamples)
+        // Pop one Opus input frame from FIFO (or use silence on underrun)
+        juce::AudioBuffer<float> tempBuffer(m_numChannels, m_packetSamples);
+        if (!m_fifo.pop(tempBuffer, m_packetSamples))
         {
             ++m_networkUnderruns;
-            if (m_networkUnderruns == 1 || (m_networkUnderruns % 200) == 0)
-                DBG("[Mix2Go] FIFO underrun (net thread): ready=" << m_fifo.getNumReady()
+            if (m_networkUnderruns == 1 || (m_networkUnderruns % 100) == 0)
+                DBG("[Mix2Go] FIFO underrun: ready=" << m_fifo.getNumReady()
                     << " needed=" << m_packetSamples
                     << " total=" << (int)m_networkUnderruns);
-
-            // Fill packet with silence and send it — seq number stays continuous
-            packet.sampleRate  = (uint32_t)m_sampleRate;
-            packet.numChannels = (uint16_t)m_numChannels;
-            packet.numSamples  = (uint32_t)m_packetSamples;
-            packet.pcmData.assign((size_t)(m_numChannels * m_packetSamples), 0);
-
-            double ticksPerUs  = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
-            packet.timestamp   = (uint64_t)((juce::Time::getHighResolutionTicks() - m_streamStartTime) / ticksPerUs);
-            packet.sequenceNumber = m_sequenceNumber++;
-            return true;
+            tempBuffer.clear(); // encode silence → keeps seq numbers continuous
         }
 
-        // Temp Buffer
-        juce::AudioBuffer<float> tempBuffer(m_numChannels, m_packetSamples);
+        bool packetReady = false;
 
-        if (!m_fifo.pop(tempBuffer, m_packetSamples))
-            return false;
+        const float* ch[2] = {
+            tempBuffer.getReadPointer(0),
+            m_numChannels > 1 ? tempBuffer.getReadPointer(1) : tempBuffer.getReadPointer(0)
+        };
 
-        // Paket füllen
-        packet.setFromBuffer(tempBuffer.getArrayOfReadPointers(),
-                             m_numChannels, m_packetSamples,
-                             (uint32_t)m_sampleRate);
+        const double ticksPerUs = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
+        const uint64_t ts = (uint64_t)((juce::Time::getHighResolutionTicks() - m_streamStartTime) / ticksPerUs);
+        const uint32_t seq = m_sequenceNumber++;
 
-        // Zeitstempel berechnen
-        double ticksPerMicrosecond = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
-        auto ticksSinceStart = juce::Time::getHighResolutionTicks() - m_streamStartTime;
+        m_opusEncoder.pushSamples(ch, m_numChannels, m_packetSamples,
+            [&](const uint8_t* opusData, int opusBytes)
+            {
+                outBytes = buildV2Packet(seq, ts, opusData, opusBytes);
+                packetReady = true;
+            });
 
-        packet.timestamp      = (uint64_t)(ticksSinceStart / ticksPerMicrosecond);
-        packet.sequenceNumber = m_sequenceNumber++;
-
-        // Periodic stats — every 200 packets (~1 second at 200 pkt/s)
-        if ((m_sequenceNumber % 200) == 0)
+        if ((seq % 100) == 0)
         {
-            DBG("[Mix2Go] Stats: seq=" << m_sequenceNumber
+            DBG("[Mix2Go] Stats: seq=" << seq
                 << "  sent=" << (int)m_sender.getPacketsSent()
                 << "  fifoLevel=" << m_fifo.getNumReady()
                 << "  overruns=" << (int)m_fifo.getOverrunCount()
@@ -301,19 +284,52 @@ private:
                 << "  KB=" << (int)(m_sender.getBytesSent() / 1024));
         }
 
-        return true;
+        return packetReady;
+    }
+
+    // Serialise one Opus frame as a Mix2Go v2 UDP packet (28-byte header + payload).
+    std::vector<uint8_t> buildV2Packet(uint32_t seq, uint64_t timestamp,
+                                        const uint8_t* opusData, int opusBytes)
+    {
+        const uint16_t payloadLen   = static_cast<uint16_t>(opusBytes);
+        const uint32_t magic        = 0x4D324731u; // "M2G1"
+        const uint8_t  frameType    = 0;            // Opus
+        const uint8_t  numCh        = static_cast<uint8_t>(m_numChannels);
+        const uint32_t sr           = 48000u;
+        const uint32_t frameSamples = static_cast<uint32_t>(m_opusEncoder.getFrameSize());
+
+        std::vector<uint8_t> buf(28 + opusBytes);
+        size_t off = 0;
+
+        auto w8  = [&](uint8_t  v) { buf[off++] = v; };
+        auto w16 = [&](uint16_t v) { std::memcpy(buf.data()+off, &v, 2); off+=2; };
+        auto w32 = [&](uint32_t v) { std::memcpy(buf.data()+off, &v, 4); off+=4; };
+        auto w64 = [&](uint64_t v) { std::memcpy(buf.data()+off, &v, 8); off+=8; };
+
+        w32(magic);       // 0
+        w8(frameType);    // 4
+        w8(numCh);        // 5
+        w16(payloadLen);  // 6
+        w32(seq);         // 8
+        w64(timestamp);   // 12  (8 bytes)
+        w32(sr);          // 20
+        w32(frameSamples);// 24
+        std::memcpy(buf.data()+28, opusData, opusBytes); // 28
+
+        return buf;
     }
     
     double m_sampleRate = 44100.0;
     int m_samplesPerBlock = 512;
     int m_numChannels = 2;
     int m_packetSamples = 441;
-    
+
     juce::String m_targetIP = "127.0.0.1";
     int m_targetPort = 12345;
-    
+
     ThreadSafeFIFO m_fifo;
     NetworkSender m_sender;
+    MixOpusEncoder m_opusEncoder { 480 }; // 10ms frames @ 48kHz
     
     StreamState m_state = StreamState::Disconnected;
     std::atomic<bool> m_isStreaming { false };

@@ -20,7 +20,8 @@ namespace streaming {
 class NetworkSender : public juce::Thread
 {
 public:
-    using AudioDataCallback = std::function<bool(AudioPacket&)>;
+    // Callback returns raw v2 packet bytes; empty vector = nothing to send this tick.
+    using AudioDataCallback = std::function<bool(std::vector<uint8_t>&)>;
     
     NetworkSender()
         : juce::Thread("Mix2Go Network Sender")
@@ -131,12 +132,10 @@ private:
 
         while (!threadShouldExit() && !m_shouldStop)
         {
-            AudioPacket packet;
+            std::vector<uint8_t> data;
 
-            if (m_audioCallback && m_audioCallback(packet))
+            if (m_audioCallback && m_audioCallback(data) && !data.empty())
             {
-                auto data = packet.serialize();
-
                 int bytesSent = m_socket->write(
                     targetIP, targetPort,
                     data.data(), (int)data.size()
