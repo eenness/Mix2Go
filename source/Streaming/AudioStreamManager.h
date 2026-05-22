@@ -276,7 +276,7 @@ private:
 
         if ((seq % 100) == 0)
         {
-            DBG("[Mix2Go] Stats: seq=" << seq
+            DBG("[Mix2Go] Stats: seq=" << (int)seq
                 << "  sent=" << (int)m_sender.getPacketsSent()
                 << "  fifoLevel=" << m_fifo.getNumReady()
                 << "  overruns=" << (int)m_fifo.getOverrunCount()
