@@ -62,9 +62,14 @@ public:
         // Input samples per Opus frame after resampling from DAW rate → 48kHz
         m_packetSamples = m_opusEncoder.getInputSamplesPerFrame();
 
-        // FIFO: 500ms headroom is more than enough
-        int fifoSize = (int)(sampleRate * 0.5);
+        // FIFO: 100ms headroom keeps worst-case accumulation low.
+        // Steady-state occupancy is ~0-2 frames; large capacity only helps
+        // transients. 100ms = 4800 samples @ 48kHz is plenty.
+        int fifoSize = (int)(sampleRate * 0.1);
         m_fifo.prepare(numChannels, fifoSize);
+
+        // Pre-allocate audio frame buffer (avoids heap alloc in hot path).
+        m_tempBuffer.setSize(numChannels, m_packetSamples);
 
         // Send interval matches exactly one Opus input frame at DAW sample rate
         double exactIntervalMs = (double)m_packetSamples / sampleRate * 1000.0;
@@ -107,9 +112,9 @@ public:
 
         m_fifo.reset();
         m_opusEncoder.reset();
-        m_sequenceNumber = 0;
+        m_sequenceNumber   = 0;
         m_networkUnderruns = 0;
-        m_streamStartTime = juce::Time::getHighResolutionTicks();
+        m_streamStartTime  = juce::Time::getHighResolutionTicks();
 
         if (!m_sender.start())
         {
@@ -141,10 +146,26 @@ public:
     void stopStreaming()
     {
         m_isStreaming = false;
+
+        // Send EOS packets BEFORE stopping the sender thread so they reach
+        // the receiver before any trailing audio frames drain from the network.
+        // Use a temporary socket so there is no threading issue.
+        {
+            juce::DatagramSocket tmpSocket;
+            if (tmpSocket.bindToPort(0) && !m_targetIP.isEmpty())
+            {
+                auto eosPkt = buildEosPacket();
+                for (int i = 0; i < 5; ++i)
+                    tmpSocket.write(m_targetIP, m_targetPort,
+                                    eosPkt.data(), (int)eosPkt.size());
+                DBG("[Mix2Go] Sent 5 EOS packets to " << m_targetIP << ":" << m_targetPort);
+            }
+        }
+
         m_sender.stop();
         m_fifo.reset();
         setState(StreamState::Disconnected);
-        
+
         DBG("Streaming stopped");
     }
     
@@ -178,9 +199,7 @@ public:
         if (!m_isStreaming)
             return;
 
-        // Push immer wenn streaming läuft - kein Silence-Gate.
-        // Das FIFO schickt dann auch Stille, damit der Empfänger
-        // einen kontinuierlichen Datenstrom bekommt.
+        // Raw push — no gate, no processing. Audio quality is preserved 1:1.
         m_fifo.push(buffer);
     }
     
@@ -244,23 +263,23 @@ private:
             m_lastLoggedOverruns = overruns;
         }
 
-        // Pop one Opus input frame from FIFO (or use silence on underrun)
-        juce::AudioBuffer<float> tempBuffer(m_numChannels, m_packetSamples);
-        if (!m_fifo.pop(tempBuffer, m_packetSamples))
+        // Pop one Opus input frame from FIFO into the pre-allocated buffer.
+        // m_tempBuffer was sized in prepare() — no heap allocation in hot path.
+        if (!m_fifo.pop(m_tempBuffer, m_packetSamples))
         {
             ++m_networkUnderruns;
             if (m_networkUnderruns == 1 || (m_networkUnderruns % 100) == 0)
                 DBG("[Mix2Go] FIFO underrun: ready=" << m_fifo.getNumReady()
                     << " needed=" << m_packetSamples
                     << " total=" << (int)m_networkUnderruns);
-            tempBuffer.clear(); // encode silence → keeps seq numbers continuous
+            m_tempBuffer.clear(); // encode silence → keeps seq numbers continuous
         }
 
         bool packetReady = false;
 
         const float* ch[2] = {
-            tempBuffer.getReadPointer(0),
-            m_numChannels > 1 ? tempBuffer.getReadPointer(1) : tempBuffer.getReadPointer(0)
+            m_tempBuffer.getReadPointer(0),
+            m_numChannels > 1 ? m_tempBuffer.getReadPointer(1) : m_tempBuffer.getReadPointer(0)
         };
 
         const double ticksPerUs = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
@@ -270,7 +289,8 @@ private:
         m_opusEncoder.pushSamples(ch, m_numChannels, m_packetSamples,
             [&](const uint8_t* opusData, int opusBytes)
             {
-                outBytes = buildV2Packet(seq, ts, opusData, opusBytes);
+                // Fill outBytes in-place (reuses the caller's vector capacity).
+                buildV2Packet(outBytes, seq, ts, opusData, opusBytes);
                 packetReady = true;
             });
 
@@ -288,8 +308,9 @@ private:
     }
 
     // Serialise one Opus frame as a Mix2Go v2 UDP packet (28-byte header + payload).
-    std::vector<uint8_t> buildV2Packet(uint32_t seq, uint64_t timestamp,
-                                        const uint8_t* opusData, int opusBytes)
+    // Fills `buf` in-place (resize, no extra allocation if capacity already sufficient).
+    void buildV2Packet(std::vector<uint8_t>& buf, uint32_t seq, uint64_t timestamp,
+                       const uint8_t* opusData, int opusBytes)
     {
         const uint16_t payloadLen   = static_cast<uint16_t>(opusBytes);
         const uint32_t magic        = 0x4D324731u; // "M2G1"
@@ -298,7 +319,7 @@ private:
         const uint32_t sr           = 48000u;
         const uint32_t frameSamples = static_cast<uint32_t>(m_opusEncoder.getFrameSize());
 
-        std::vector<uint8_t> buf(28 + opusBytes);
+        buf.resize(28 + opusBytes);
         size_t off = 0;
 
         auto w8  = [&](uint8_t  v) { buf[off++] = v; };
@@ -315,7 +336,31 @@ private:
         w32(sr);          // 20
         w32(frameSamples);// 24
         std::memcpy(buf.data()+28, opusData, opusBytes); // 28
+    }
 
+    // Build a 28-byte EOS packet (payload length = 0, frameType = 2).
+    std::vector<uint8_t> buildEosPacket()
+    {
+        const double ticksPerUs = juce::Time::getHighResolutionTicksPerSecond() / 1000000.0;
+        const uint64_t ts = (uint64_t)((juce::Time::getHighResolutionTicks() - m_streamStartTime) / ticksPerUs);
+
+        const uint32_t magic        = 0x4D324731u;
+        const uint8_t  frameType    = 2; // EOS
+        const uint8_t  numCh        = static_cast<uint8_t>(m_numChannels);
+        const uint16_t payloadLen   = 0;
+        const uint32_t seq          = m_sequenceNumber; // don't increment — EOS is out-of-band
+        const uint32_t sr           = 48000u;
+        const uint32_t frameSamples = static_cast<uint32_t>(m_opusEncoder.getFrameSize());
+
+        std::vector<uint8_t> buf(28);
+        size_t off = 0;
+        auto w8  = [&](uint8_t  v) { buf[off++] = v; };
+        auto w16 = [&](uint16_t v) { std::memcpy(buf.data()+off, &v, 2); off+=2; };
+        auto w32 = [&](uint32_t v) { std::memcpy(buf.data()+off, &v, 4); off+=4; };
+        auto w64 = [&](uint64_t v) { std::memcpy(buf.data()+off, &v, 8); off+=8; };
+
+        w32(magic); w8(frameType); w8(numCh); w16(payloadLen);
+        w32(seq); w64(ts); w32(sr); w32(frameSamples);
         return buf;
     }
     
@@ -330,6 +375,10 @@ private:
     ThreadSafeFIFO m_fifo;
     NetworkSender m_sender;
     MixOpusEncoder m_opusEncoder { 480 }; // 10ms frames @ 48kHz
+
+    // Pre-allocated audio frame buffer — sized once in prepare(), reused every packet.
+    // Eliminates 1 heap alloc per packet (~100/sec) in the network thread hot path.
+    juce::AudioBuffer<float> m_tempBuffer;
     
     StreamState m_state = StreamState::Disconnected;
     std::atomic<bool> m_isStreaming { false };

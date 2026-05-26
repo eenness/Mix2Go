@@ -130,9 +130,15 @@ private:
         const juce::int64 intervalTicks = (juce::int64)(m_sendIntervalMs * ticksPerMs);
         juce::int64 nextSendTick = juce::Time::getHighResolutionTicks() + intervalTicks;
 
+        // Pre-allocate outside the loop so the vector's heap buffer is reused
+        // every iteration (resize/clear preserves capacity → zero allocation/deallocation
+        // per packet after the first one).
+        std::vector<uint8_t> data;
+        data.reserve(28 + 1500); // 28-byte header + max Opus payload (< 1275 bytes)
+
         while (!threadShouldExit() && !m_shouldStop)
         {
-            std::vector<uint8_t> data;
+            data.clear(); // O(1): resets size, keeps capacity
 
             if (m_audioCallback && m_audioCallback(data) && !data.empty())
             {

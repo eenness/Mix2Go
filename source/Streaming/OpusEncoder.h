@@ -113,12 +113,13 @@ private:
             m_encoder = nullptr;
             return;
         }
-        opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(128000));
-        opus_encoder_ctl(m_encoder, OPUS_SET_COMPLEXITY(8));
-        opus_encoder_ctl(m_encoder, OPUS_SET_INBAND_FEC(1));        // FEC for loss concealment
-        opus_encoder_ctl(m_encoder, OPUS_SET_PACKET_LOSS_PERC(5));  // assume ~5% loss
+        opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(256000));
+        opus_encoder_ctl(m_encoder, OPUS_SET_COMPLEXITY(10));        // max quality
+        opus_encoder_ctl(m_encoder, OPUS_SET_INBAND_FEC(1));         // FEC for loss concealment
+        opus_encoder_ctl(m_encoder, OPUS_SET_PACKET_LOSS_PERC(1));   // target ≤1% loss
+        opus_encoder_ctl(m_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC)); // music optimised
 
-        DBG("[OpusEncoder] Created: 48000 Hz / 2ch / 128 kbps / FEC on");
+        DBG("[OpusEncoder] Created: 48000 Hz / 2ch / 256 kbps / complexity=10 / FEC on / music mode");
     }
 
     void destroyEncoder()
