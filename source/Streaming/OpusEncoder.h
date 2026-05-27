@@ -14,7 +14,7 @@ namespace streaming {
 // Usage:
 //   1. Call prepare(inputSampleRate, numChannels) when DAW sample rate is known.
 //   2. Call pushSamples() every processBlock(). A PacketCallback fires whenever
-//      a full 20 ms Opus frame (960 samples at 48 kHz) is ready.
+//      a full 10 ms Opus frame (480 samples at 48 kHz) is ready.
 //   3. Call reset() when the stream stops/restarts.
 //
 // Thread safety: all methods must be called from the same thread (network thread).
@@ -23,7 +23,7 @@ class MixOpusEncoder
 public:
     using PacketCallback = std::function<void(const uint8_t* data, int bytes)>;
 
-    explicit MixOpusEncoder(int frameSize = 960)
+    explicit MixOpusEncoder(int frameSize = 480)
         : m_frameSize(frameSize)
     {
         m_outputBuffer.resize(4000); // > max Opus frame size (1275 bytes)
