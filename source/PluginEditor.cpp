@@ -25,12 +25,18 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
     // Register as stream listener
     processorRef.getStreamManager().addListener(this);
 
+    // Start listening for the Mix2Go app — streaming starts automatically on discovery.
+    processorRef.getStreamManager().startDiscovery();
+
     setSize(1500, 700);
     startTimerHz(30);                       //setzt das intervall vom pegel aktualisieren auf 30ms
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
+    // Stop discovery before unregistering to avoid late callAsync hitting a dead object.
+    processorRef.getStreamManager().stopDiscovery();
+
     // Unregister stream listener
     processorRef.getStreamManager().removeListener(this);
 
@@ -114,22 +120,20 @@ void AudioPluginAudioProcessorEditor::resized()
         x += width * 2;
     }
 
-    // Streaming UI - top left area
-    const int streamX = 200;
-    const int streamY = 10;
-    const int labelWidth = 80;
-    const int inputWidth = 120;
-    const int buttonWidth = 140;
-    const int rowHeight = 25;
-    const int spacing = 5;
+    // Streaming UI — top bar (auto-discovery, no IP/port inputs needed)
+    const int streamX      = 200;
+    const int streamY      = 8;
+    const int rowHeight    = 24;
+    const int spacing      = 8;
+    const int statusWidth  = 220;
+    const int deviceWidth  = 240;
+    const int buttonWidth  = 130;
 
-    m_ip_label.setBounds(streamX, streamY, labelWidth, rowHeight);
-    m_ip_input.setBounds(streamX + labelWidth + spacing, streamY, inputWidth, rowHeight);
-    m_port_label.setBounds(streamX + labelWidth + inputWidth + spacing * 2, streamY, 50, rowHeight);
-    m_port_input.setBounds(streamX + labelWidth + inputWidth + 50 + spacing * 3, streamY, 60, rowHeight);
-    m_stream_button.setBounds(streamX + labelWidth + inputWidth + 50 + 60 + spacing * 4, streamY, buttonWidth, rowHeight);
-    m_status_label.setBounds(streamX + labelWidth + inputWidth + 50 + 60 + buttonWidth + spacing * 5, streamY, 150, rowHeight);
-    m_stats_label.setBounds(streamX, streamY + rowHeight + spacing, 400, rowHeight);
+    // [● Status]  [device info]  [Stop button]  [stats]
+    m_status_label.setBounds(streamX, streamY, statusWidth, rowHeight);
+    m_device_label.setBounds(streamX + statusWidth + spacing, streamY, deviceWidth, rowHeight);
+    m_stream_button.setBounds(streamX + statusWidth + deviceWidth + spacing * 2, streamY, buttonWidth, rowHeight);
+    m_stats_label.setBounds(streamX, streamY + rowHeight + 2, statusWidth + deviceWidth + buttonWidth + spacing * 2, rowHeight);
 }
 
 void AudioPluginAudioProcessorEditor::setComboBoxProps(juce::ComboBox &box, const juce::StringArray &items)
@@ -280,36 +284,23 @@ void AudioPluginAudioProcessorEditor::timerCallback()
 
 void AudioPluginAudioProcessorEditor::initStreamingUI()
 {
-    // IP Input
-    m_ip_label.setJustificationType(juce::Justification::centredRight);
-    m_ip_label.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(m_ip_label);
-
-    m_ip_input.setText("127.0.0.1");
-    m_ip_input.setJustification(juce::Justification::centredLeft);
-    addAndMakeVisible(m_ip_input);
-
-    // Port Input
-    m_port_label.setJustificationType(juce::Justification::centredRight);
-    m_port_label.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(m_port_label);
-
-    m_port_input.setText("12345");
-    m_port_input.setJustification(juce::Justification::centredLeft);
-    m_port_input.setInputRestrictions(5, "0123456789");
-    addAndMakeVisible(m_port_input);
-
-    // Stream Button
-    m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkgreen);
-    m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
-    addAndMakeVisible(m_stream_button);
-
-    // Status Label
+    // Status label — shows discovery / connection state
     m_status_label.setJustificationType(juce::Justification::centredLeft);
     m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
     addAndMakeVisible(m_status_label);
 
-    // Stats Label
+    // Device label — shows "IP:port" once an app is discovered
+    m_device_label.setJustificationType(juce::Justification::centredLeft);
+    m_device_label.setColour(juce::Label::textColourId, juce::Colours::white);
+    addAndMakeVisible(m_device_label);
+
+    // Stop button — only active while streaming; auto-discovery re-connects when needed
+    m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkred);
+    m_stream_button.setEnabled(false); // enabled once streaming starts
+    m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
+    addAndMakeVisible(m_stream_button);
+
+    // Stats label — packet / byte counters
     m_stats_label.setJustificationType(juce::Justification::centredLeft);
     m_stats_label.setColour(juce::Label::textColourId, juce::Colours::grey);
     m_stats_label.setFont(juce::Font(12.0f));
@@ -318,63 +309,50 @@ void AudioPluginAudioProcessorEditor::initStreamingUI()
 
 void AudioPluginAudioProcessorEditor::onStreamButtonClicked()
 {
-    auto& streamManager = processorRef.getStreamManager();
-
-    if (streamManager.isStreaming())
-    {
-        streamManager.stopStreaming();
-    }
-    else
-    {
-        // Get IP and port from inputs
-        const auto ip = m_ip_input.getText();
-        const auto port = m_port_input.getText().getIntValue();
-
-        if (ip.isEmpty() || port <= 0 || port > 65535)
-        {
-            m_status_label.setText("Invalid IP/Port", juce::dontSendNotification);
-            m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
-            return;
-        }
-
-        streamManager.setTarget(ip, port);
-        streamManager.startStreaming();
-    }
+    // Button is only shown / enabled when streaming is active.
+    // Pressing it lets the user manually force-stop (e.g. to mute the output
+    // while the app is still running).  Auto-discovery will re-connect
+    // next time the heartbeat arrives.
+    processorRef.getStreamManager().stopStreaming();
 }
 
 void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::StreamState newState)
 {
-    // Update UI on message thread
+    // Always called on the message thread via callAsync in AudioStreamManager.
     juce::MessageManager::callAsync([this, newState]()
     {
+        auto& mgr = processorRef.getStreamManager();
+
         switch (newState)
         {
             case mix2go::streaming::StreamState::Disconnected:
-                m_stream_button.setButtonText("Start Streaming");
-                m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkgreen);
-                m_status_label.setText("Disconnected", juce::dontSendNotification);
+                m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
+                m_device_label.setText("", juce::dontSendNotification);
+                m_stream_button.setEnabled(false);
                 break;
 
             case mix2go::streaming::StreamState::Connecting:
-                m_stream_button.setButtonText("Connecting...");
-                m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::yellow.darker());
-                m_status_label.setText("Connecting...", juce::dontSendNotification);
+                m_status_label.setText("Verbinde…", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::yellow);
+                m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
+                                       juce::dontSendNotification);
+                m_stream_button.setEnabled(false);
                 break;
 
             case mix2go::streaming::StreamState::Streaming:
-                m_stream_button.setButtonText("Stop Streaming");
-                m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkred);
-                m_status_label.setText("Streaming", juce::dontSendNotification);
+                m_status_label.setText("● Streaming", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::limegreen);
+                m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
+                                       juce::dontSendNotification);
+                m_stream_button.setEnabled(true);
                 break;
 
             case mix2go::streaming::StreamState::Error:
-                m_stream_button.setButtonText("Start Streaming");
-                m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkgreen);
-                m_status_label.setText("Error", juce::dontSendNotification);
+                m_status_label.setText("Fehler", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
+                m_device_label.setText("", juce::dontSendNotification);
+                m_stream_button.setEnabled(false);
                 break;
         }
     });
@@ -386,14 +364,16 @@ void AudioPluginAudioProcessorEditor::updateStreamingUI()
 
     if (streamManager.isStreaming())
     {
-        const auto packets = streamManager.getPacketsSent();
-        const auto bytes = streamManager.getBytesSent();
+        const auto packets   = streamManager.getPacketsSent();
+        const auto bytes     = streamManager.getBytesSent();
         const auto fifoLevel = streamManager.getFIFOLevel();
+        const auto underruns = streamManager.getFIFOUnderruns();
 
         juce::String stats;
-        stats << "Packets: " << juce::String(packets)
-              << " | Bytes: " << juce::String(bytes / 1024) << " KB"
-              << " | FIFO: " << juce::String(fifoLevel);
+        stats << "Pkts: "   << juce::String(packets)
+              << "  KB: "   << juce::String(bytes / 1024)
+              << "  FIFO: " << juce::String(fifoLevel)
+              << "  Underruns: " << juce::String(underruns);
 
         m_stats_label.setText(stats, juce::dontSendNotification);
     }

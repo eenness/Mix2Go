@@ -6,6 +6,7 @@
 #include "ThreadSafeFIFO.h"
 #include "NetworkSender.h"
 #include "OpusEncoder.h"
+#include "DiscoveryReceiver.h"
 
 namespace mix2go {
 namespace streaming {
@@ -38,12 +39,58 @@ public:
         m_sender.setAudioCallback([this](std::vector<uint8_t>& outBytes) {
             return fillPacketFromFIFO(outBytes);
         });
+
+        // Wire discovery callbacks (run on JUCE message thread via callAsync).
+        m_discovery.onDiscovered = [this](juce::String ip, int port)
+        {
+            const bool targetChanged = (ip != m_targetIP || port != m_targetPort);
+            setTarget(ip, port);
+            m_discoveredIP   = ip;
+            m_discoveredPort = port;
+
+            if (!isStreaming())
+            {
+                DBG("[Discovery] Auto-starting stream to " << ip << ":" << port);
+                startStreaming();
+            }
+            else if (targetChanged)
+            {
+                // Seamlessly retarget mid-stream (e.g. app restarted on new port).
+                DBG("[Discovery] Target changed mid-stream → " << ip << ":" << port);
+            }
+            notifyListeners();
+        };
+
+        m_discovery.onLost = [this]()
+        {
+            m_discoveredIP   = "";
+            m_discoveredPort = 0;
+            if (isStreaming())
+            {
+                DBG("[Discovery] App lost — stopping stream");
+                stopStreaming();
+            }
+            notifyListeners();
+        };
     }
-    
+
     ~AudioStreamManager()
     {
+        m_discovery.stopListening();
         stopStreaming();
     }
+
+    // ── Discovery ──────────────────────────────────────────────────────────
+
+    /// Start listening for Mix2Go app broadcasts.
+    /// Call once at plugin startup (e.g. from PluginEditor ctor).
+    int startDiscovery() { return m_discovery.startListening(); }
+
+    void stopDiscovery()  { m_discovery.stopListening(); }
+
+    bool hasDiscoveredDevice() const { return m_discoveredIP.isNotEmpty(); }
+    juce::String discoveredIP()   const { return m_discoveredIP; }
+    int          discoveredPort() const { return m_discoveredPort; }
     
     //==========================================================================
     // Config Kram
@@ -235,6 +282,15 @@ public:
     }
     
 private:
+    /// Notify all listeners with the current state (used when discovery info
+    /// changes without a state transition, e.g. seamless target retargeting).
+    void notifyListeners()
+    {
+        juce::ScopedLock lock(m_listenerLock);
+        for (auto* listener : m_listeners)
+            if (listener) listener->streamStateChanged(m_state);
+    }
+
     void setState(StreamState newState)
     {
         if (m_state == newState)
@@ -371,6 +427,10 @@ private:
 
     juce::String m_targetIP = "127.0.0.1";
     int m_targetPort = 12345;
+
+    DiscoveryReceiver m_discovery;
+    juce::String      m_discoveredIP;
+    int               m_discoveredPort = 0;
 
     ThreadSafeFIFO m_fifo;
     NetworkSender m_sender;
