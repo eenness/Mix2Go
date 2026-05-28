@@ -95,8 +95,27 @@ public:
     /// When false, discovery heartbeats are received but streaming is NOT
     /// auto-started.  Set to false when the user manually stops streaming.
     /// Set back to true when the user explicitly re-enables auto-connect.
-    void setAutoConnect(bool enable) { m_autoConnect = enable; }
-    bool isAutoConnectEnabled()      const { return m_autoConnect; }
+    void setAutoConnect(bool enable)
+    {
+        m_autoConnect = enable;
+
+        // DiscoveryReceiver only fires onDiscovered on *endpoint change*.
+        // If the app is still broadcasting on the same IP:port, setting
+        // m_autoConnect=true would never trigger streaming.
+        // → If we already know the device, start streaming directly now.
+        if (enable && !isStreaming() && m_discoveredIP.isNotEmpty())
+        {
+            DBG("[Discovery] Re-enabling auto-connect → starting stream to "
+                << m_discoveredIP << ":" << m_discoveredPort);
+            setTarget(m_discoveredIP, m_discoveredPort);
+            startStreaming();
+        }
+    }
+    bool isAutoConnectEnabled() const { return m_autoConnect; }
+
+    // ── Diagnostics (for UI feedback) ─────────────────────────────────────
+    int  discoveryBoundPort()      const { return m_discovery.boundPort(); }
+    int  discoveryPacketsReceived() const { return m_discovery.packetsReceived(); }
     
     //==========================================================================
     // Config Kram

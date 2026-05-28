@@ -26,7 +26,25 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
     processorRef.getStreamManager().addListener(this);
 
     // Start listening for the Mix2Go app — streaming starts automatically on discovery.
-    processorRef.getStreamManager().startDiscovery();
+    const int boundPort = processorRef.getStreamManager().startDiscovery();
+
+    // streamStateChanged(Disconnected) is never called at startup because the state
+    // doesn't *change* — it starts as Disconnected.  Set initial UI here explicitly.
+    if (boundPort > 0)
+    {
+        m_status_label.setText("Suche Mix2Go App… (UDP " + juce::String(boundPort) + ")",
+                               juce::dontSendNotification);
+        m_stream_button.setButtonText("Suche läuft…");
+        m_stream_button.setEnabled(false);
+    }
+    else
+    {
+        m_status_label.setText("UDP-Bind fehlgeschlagen! Port 40051-40059 belegt?",
+                               juce::dontSendNotification);
+        m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
+        m_stream_button.setButtonText("Fehler");
+        m_stream_button.setEnabled(false);
+    }
 
     setSize(1500, 700);
     startTimerHz(30);                       //setzt das intervall vom pegel aktualisieren auf 30ms
@@ -294,9 +312,9 @@ void AudioPluginAudioProcessorEditor::initStreamingUI()
     m_device_label.setColour(juce::Label::textColourId, juce::Colours::white);
     addAndMakeVisible(m_device_label);
 
-    // Stop button — only active while streaming; auto-discovery re-connects when needed
-    m_stream_button.setColour(juce::TextButton::buttonColourId, juce::Colours::darkred);
-    m_stream_button.setEnabled(false); // enabled once streaming starts
+    // Stop button — text and enabled state updated by streamStateChanged / initState.
+    m_stream_button.setButtonText("Suche läuft…");
+    m_stream_button.setEnabled(false);
     m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
     addAndMakeVisible(m_stream_button);
 
@@ -344,10 +362,15 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                 m_device_label.setText("", juce::dontSendNotification);
                 if (mgr.isAutoConnectEnabled())
                 {
-                    // Normal searching state — heartbeat not yet received.
-                    m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
+                    // Normal searching state — show port so user can verify.
+                    const int port = mgr.discoveryBoundPort();
+                    const juce::String portStr = port > 0
+                        ? " (UDP " + juce::String(port) + ")"
+                        : " (Port-Fehler!)";
+                    m_status_label.setText("Suche Mix2Go App…" + portStr,
+                                           juce::dontSendNotification);
                     m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-                    m_stream_button.setButtonText("Auto-Connect läuft");
+                    m_stream_button.setButtonText("Suche läuft…");
                     m_stream_button.setEnabled(false);
                 }
                 else
@@ -391,25 +414,43 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
 
 void AudioPluginAudioProcessorEditor::updateStreamingUI()
 {
-    auto& streamManager = processorRef.getStreamManager();
+    auto& sm = processorRef.getStreamManager();
 
-    if (streamManager.isStreaming())
+    if (sm.isStreaming())
     {
-        const auto packets   = streamManager.getPacketsSent();
-        const auto bytes     = streamManager.getBytesSent();
-        const auto fifoLevel = streamManager.getFIFOLevel();
-        const auto underruns = streamManager.getFIFOUnderruns();
-
         juce::String stats;
-        stats << "Pkts: "   << juce::String(packets)
-              << "  KB: "   << juce::String(bytes / 1024)
-              << "  FIFO: " << juce::String(fifoLevel)
-              << "  Underruns: " << juce::String(underruns);
+        stats << "Pkts: "       << sm.getPacketsSent()
+              << "  KB: "       << (sm.getBytesSent() / 1024)
+              << "  FIFO: "     << sm.getFIFOLevel()
+              << "  Underruns: "<< sm.getFIFOUnderruns();
 
         m_stats_label.setText(stats, juce::dontSendNotification);
     }
     else
     {
-        m_stats_label.setText("", juce::dontSendNotification);
+        // Show discovery diagnostics so the user can see if it's working.
+        const int pkts = sm.discoveryPacketsReceived();
+        const int port = sm.discoveryBoundPort();
+
+        juce::String info;
+        if (port <= 0)
+        {
+            info = "Discovery: Port-Bind fehlgeschlagen!";
+        }
+        else if (pkts == 0)
+        {
+            info = "Discovery: Lausche auf UDP " + juce::String(port)
+                 + " — noch kein Paket empfangen";
+        }
+        else
+        {
+            info = "Discovery: "  + juce::String(pkts)
+                 + " Pkt empfangen  |  letztes Gerat: "
+                 + sm.discoveredIP();
+            if (sm.discoveredPort() > 0)
+                info += ":" + juce::String(sm.discoveredPort());
+        }
+
+        m_stats_label.setText(info, juce::dontSendNotification);
     }
 }

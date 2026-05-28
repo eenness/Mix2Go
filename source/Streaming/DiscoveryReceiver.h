@@ -93,8 +93,12 @@ public:
     int  boundPort() const { return m_boundPort; }
     bool isListening() const { return isThreadRunning() && m_boundPort > 0; }
 
-    juce::String lastSeenIP()   const { return m_lastSeenIP; }
-    int          lastSeenPort() const { return m_lastSeenPort; }
+    juce::String lastSeenIP()      const { return m_lastSeenIP; }
+    int          lastSeenPort()    const { return m_lastSeenPort; }
+
+    /// Total valid Mix2Go packets received since startListening().
+    /// Safe to read from any thread; used for UI diagnostics.
+    int  packetsReceived()         const { return m_packetsReceived.load(); }
 
 private:
 
@@ -141,6 +145,7 @@ private:
             if (audioPort <= 0 || audioPort > 65535) continue;
 
             lastHeartbeat = juce::Time::currentTimeMillis();
+            ++m_packetsReceived; // count every valid Mix2Go packet (even duplicates)
 
             // Only notify when the endpoint actually changes (or on first connection).
             if (!deviceConnected
@@ -163,9 +168,10 @@ private:
     }
 
     std::unique_ptr<juce::DatagramSocket> m_socket;
-    int          m_boundPort   = 0;
-    juce::String m_lastSeenIP;
-    int          m_lastSeenPort = 0;
+    int                  m_boundPort      = 0;
+    juce::String         m_lastSeenIP;
+    int                  m_lastSeenPort   = 0;
+    std::atomic<int>     m_packetsReceived { 0 };
 };
 
 } // namespace mix2go::streaming
