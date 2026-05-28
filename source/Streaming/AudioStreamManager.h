@@ -48,12 +48,12 @@ public:
             m_discoveredIP   = ip;
             m_discoveredPort = port;
 
-            if (!isStreaming())
+            if (!isStreaming() && m_autoConnect)
             {
                 DBG("[Discovery] Auto-starting stream to " << ip << ":" << port);
                 startStreaming();
             }
-            else if (targetChanged)
+            else if (isStreaming() && targetChanged)
             {
                 // Seamlessly retarget mid-stream (e.g. app restarted on new port).
                 DBG("[Discovery] Target changed mid-stream → " << ip << ":" << port);
@@ -91,6 +91,12 @@ public:
     bool hasDiscoveredDevice() const { return m_discoveredIP.isNotEmpty(); }
     juce::String discoveredIP()   const { return m_discoveredIP; }
     int          discoveredPort() const { return m_discoveredPort; }
+
+    /// When false, discovery heartbeats are received but streaming is NOT
+    /// auto-started.  Set to false when the user manually stops streaming.
+    /// Set back to true when the user explicitly re-enables auto-connect.
+    void setAutoConnect(bool enable) { m_autoConnect = enable; }
+    bool isAutoConnectEnabled()      const { return m_autoConnect; }
     
     //==========================================================================
     // Config Kram
@@ -428,9 +434,10 @@ private:
     juce::String m_targetIP = "127.0.0.1";
     int m_targetPort = 12345;
 
-    DiscoveryReceiver m_discovery;
-    juce::String      m_discoveredIP;
-    int               m_discoveredPort = 0;
+    DiscoveryReceiver    m_discovery;
+    juce::String         m_discoveredIP;
+    int                  m_discoveredPort = 0;
+    std::atomic<bool>    m_autoConnect { true };
 
     ThreadSafeFIFO m_fifo;
     NetworkSender m_sender;

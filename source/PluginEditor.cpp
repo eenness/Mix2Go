@@ -309,11 +309,26 @@ void AudioPluginAudioProcessorEditor::initStreamingUI()
 
 void AudioPluginAudioProcessorEditor::onStreamButtonClicked()
 {
-    // Button is only shown / enabled when streaming is active.
-    // Pressing it lets the user manually force-stop (e.g. to mute the output
-    // while the app is still running).  Auto-discovery will re-connect
-    // next time the heartbeat arrives.
-    processorRef.getStreamManager().stopStreaming();
+    auto& sm = processorRef.getStreamManager();
+
+    if (sm.isStreaming())
+    {
+        // User manually stops: disable auto-reconnect so the 1-second
+        // heartbeat doesn't immediately restart streaming.
+        sm.setAutoConnect(false);
+        sm.stopStreaming();
+        // streamStateChanged(Disconnected) fires → UI shows "Enable" button.
+    }
+    else
+    {
+        // User re-enables auto-connect.  Discovery is still running; the next
+        // heartbeat (≤1 s) will trigger startStreaming() automatically.
+        sm.setAutoConnect(true);
+        m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
+        m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
+        m_stream_button.setButtonText("Auto-Connect läuft");
+        m_stream_button.setEnabled(false);
+    }
 }
 
 void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::StreamState newState)
@@ -326,10 +341,23 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
         switch (newState)
         {
             case mix2go::streaming::StreamState::Disconnected:
-                m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
-                m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
                 m_device_label.setText("", juce::dontSendNotification);
-                m_stream_button.setEnabled(false);
+                if (mgr.isAutoConnectEnabled())
+                {
+                    // Normal searching state — heartbeat not yet received.
+                    m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
+                    m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
+                    m_stream_button.setButtonText("Auto-Connect läuft");
+                    m_stream_button.setEnabled(false);
+                }
+                else
+                {
+                    // User manually stopped — let them re-enable.
+                    m_status_label.setText("Gestoppt", juce::dontSendNotification);
+                    m_status_label.setColour(juce::Label::textColourId, juce::Colours::grey);
+                    m_stream_button.setButtonText("Auto-Connect aktivieren");
+                    m_stream_button.setEnabled(true);
+                }
                 break;
 
             case mix2go::streaming::StreamState::Connecting:
@@ -337,6 +365,7 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::yellow);
                 m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
                                        juce::dontSendNotification);
+                m_stream_button.setButtonText("Auto-Connect läuft");
                 m_stream_button.setEnabled(false);
                 break;
 
@@ -345,6 +374,7 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::limegreen);
                 m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
                                        juce::dontSendNotification);
+                m_stream_button.setButtonText("Stop");
                 m_stream_button.setEnabled(true);
                 break;
 
@@ -352,7 +382,8 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                 m_status_label.setText("Fehler", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
                 m_device_label.setText("", juce::dontSendNotification);
-                m_stream_button.setEnabled(false);
+                m_stream_button.setButtonText("Auto-Connect aktivieren");
+                m_stream_button.setEnabled(true);
                 break;
         }
     });

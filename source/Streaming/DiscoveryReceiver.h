@@ -60,7 +60,9 @@ public:
         for (int delta = 0; delta < 9; ++delta)
         {
             const int port = kDiscoveryPort + delta;
-            m_socket = std::make_unique<juce::DatagramSocket>();
+            // allowBroadcast = true so macOS delivers 255.255.255.255 packets
+            // to this socket even on the receiving side.
+            m_socket = std::make_unique<juce::DatagramSocket>(true);
 
             if (m_socket->bindToPort(port))
             {
