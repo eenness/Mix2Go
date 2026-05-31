@@ -42,7 +42,7 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
         }
         else if (port <= 0)
         {
-            m_status_label.setText("UDP-Bind fehlgeschlagen! Port 40051-40059 belegt?",
+            m_status_label.setText("UDP bind failed! Ports 40051-40059 all in use?",
                                    juce::dontSendNotification);
             m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
             m_stream_button.setButtonText("Fehler");
@@ -50,10 +50,10 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
         }
         else
         {
-            m_status_label.setText("Suche Mix2Go App… (UDP " + juce::String(port) + ")",
+            m_status_label.setText("Searching for Mix2Go App... (UDP " + juce::String(port) + ")",
                                    juce::dontSendNotification);
             m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-            m_stream_button.setButtonText("Suche läuft…");
+            m_stream_button.setButtonText("Searching...");
             m_stream_button.setEnabled(false);
         }
     }
@@ -325,7 +325,7 @@ void AudioPluginAudioProcessorEditor::initStreamingUI()
     addAndMakeVisible(m_device_label);
 
     // Stop button — text and enabled state updated by streamStateChanged / initState.
-    m_stream_button.setButtonText("Suche läuft…");
+    m_stream_button.setButtonText("Searching...");
     m_stream_button.setEnabled(false);
     m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
     addAndMakeVisible(m_stream_button);
@@ -354,9 +354,9 @@ void AudioPluginAudioProcessorEditor::onStreamButtonClicked()
         // User re-enables auto-connect.  Discovery is still running; the next
         // heartbeat (≤1 s) will trigger startStreaming() automatically.
         sm.setAutoConnect(true);
-        m_status_label.setText("Suche Mix2Go App…", juce::dontSendNotification);
+        m_status_label.setText("Searching for Mix2Go App...", juce::dontSendNotification);
         m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-        m_stream_button.setButtonText("Auto-Connect läuft");
+        m_stream_button.setButtonText("Auto-Connect active");
         m_stream_button.setEnabled(false);
     }
 }
@@ -379,28 +379,28 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                     const juce::String portStr = port > 0
                         ? " (UDP " + juce::String(port) + ")"
                         : " (Port-Fehler!)";
-                    m_status_label.setText("Suche Mix2Go App…" + portStr,
+                    m_status_label.setText("Searching for Mix2Go App..." + portStr,
                                            juce::dontSendNotification);
                     m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-                    m_stream_button.setButtonText("Suche läuft…");
+                    m_stream_button.setButtonText("Searching...");
                     m_stream_button.setEnabled(false);
                 }
                 else
                 {
                     // User manually stopped — let them re-enable.
-                    m_status_label.setText("Gestoppt", juce::dontSendNotification);
+                    m_status_label.setText("Stopped", juce::dontSendNotification);
                     m_status_label.setColour(juce::Label::textColourId, juce::Colours::grey);
-                    m_stream_button.setButtonText("Auto-Connect aktivieren");
+                    m_stream_button.setButtonText("Enable Auto-Connect");
                     m_stream_button.setEnabled(true);
                 }
                 break;
 
             case mix2go::streaming::StreamState::Connecting:
-                m_status_label.setText("Verbinde…", juce::dontSendNotification);
+                m_status_label.setText("Connecting...", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::yellow);
                 m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
                                        juce::dontSendNotification);
-                m_stream_button.setButtonText("Auto-Connect läuft");
+                m_stream_button.setButtonText("Auto-Connect active");
                 m_stream_button.setEnabled(false);
                 break;
 
@@ -417,7 +417,7 @@ void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::Stre
                 m_status_label.setText("Fehler", juce::dontSendNotification);
                 m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
                 m_device_label.setText("", juce::dontSendNotification);
-                m_stream_button.setButtonText("Auto-Connect aktivieren");
+                m_stream_button.setButtonText("Enable Auto-Connect");
                 m_stream_button.setEnabled(true);
                 break;
         }
@@ -447,17 +447,17 @@ void AudioPluginAudioProcessorEditor::updateStreamingUI()
         juce::String info;
         if (port <= 0)
         {
-            info = "Discovery: Port-Bind fehlgeschlagen!";
+            info = "Discovery: Port bind failed!";
         }
         else if (pkts == 0)
         {
-            info = "Discovery: Lausche auf UDP " + juce::String(port)
-                 + " — noch kein Paket empfangen";
+            info = "Discovery: Listening on UDP " + juce::String(port)
+                 + " — no packets received yet";
         }
         else
         {
             info = "Discovery: "  + juce::String(pkts)
-                 + " Pkt empfangen  |  letztes Gerat: "
+                 + " Pkt empfangen  |  last device: "
                  + sm.discoveredIP();
             if (sm.discoveredPort() > 0)
                 info += ":" + juce::String(sm.discoveredPort());

@@ -57,7 +57,7 @@ private:
 
     // Streaming UI components
     juce::TextButton m_stream_button { "Stop Streaming" };
-    juce::Label m_status_label  { "StatusLabel",  "Suche Mix2Go App…" };
+    juce::Label m_status_label  { "StatusLabel",  "Searching for Mix2Go App..." };
     juce::Label m_device_label  { "DeviceLabel",  "" };
     juce::Label m_stats_label   { "StatsLabel",   "" };
 
