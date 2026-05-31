@@ -25,25 +25,37 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
     // Register as stream listener
     processorRef.getStreamManager().addListener(this);
 
-    // Start listening for the Mix2Go app — streaming starts automatically on discovery.
-    const int boundPort = processorRef.getStreamManager().startDiscovery();
+    // Discovery is started by the Processor constructor — it runs whether the GUI
+    // is open or not.  Here we just sync the UI to the current state.
+    {
+        auto& sm = processorRef.getStreamManager();
+        const int port = sm.discoveryBoundPort();
 
-    // streamStateChanged(Disconnected) is never called at startup because the state
-    // doesn't *change* — it starts as Disconnected.  Set initial UI here explicitly.
-    if (boundPort > 0)
-    {
-        m_status_label.setText("Suche Mix2Go App… (UDP " + juce::String(boundPort) + ")",
-                               juce::dontSendNotification);
-        m_stream_button.setButtonText("Suche läuft…");
-        m_stream_button.setEnabled(false);
-    }
-    else
-    {
-        m_status_label.setText("UDP-Bind fehlgeschlagen! Port 40051-40059 belegt?",
-                               juce::dontSendNotification);
-        m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
-        m_stream_button.setButtonText("Fehler");
-        m_stream_button.setEnabled(false);
+        if (sm.isStreaming())
+        {
+            m_status_label.setText("● Streaming", juce::dontSendNotification);
+            m_status_label.setColour(juce::Label::textColourId, juce::Colours::limegreen);
+            m_device_label.setText(sm.discoveredIP() + ":" + juce::String(sm.discoveredPort()),
+                                   juce::dontSendNotification);
+            m_stream_button.setButtonText("Stop");
+            m_stream_button.setEnabled(true);
+        }
+        else if (port <= 0)
+        {
+            m_status_label.setText("UDP-Bind fehlgeschlagen! Port 40051-40059 belegt?",
+                                   juce::dontSendNotification);
+            m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
+            m_stream_button.setButtonText("Fehler");
+            m_stream_button.setEnabled(false);
+        }
+        else
+        {
+            m_status_label.setText("Suche Mix2Go App… (UDP " + juce::String(port) + ")",
+                                   juce::dontSendNotification);
+            m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
+            m_stream_button.setButtonText("Suche läuft…");
+            m_stream_button.setEnabled(false);
+        }
     }
 
     setSize(1500, 700);
@@ -52,8 +64,8 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudi
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
-    // Stop discovery before unregistering to avoid late callAsync hitting a dead object.
-    processorRef.getStreamManager().stopDiscovery();
+    // NOTE: do NOT call stopDiscovery() here — discovery lives in the Processor
+    // and must continue running after the GUI window is closed.
 
     // Unregister stream listener
     processorRef.getStreamManager().removeListener(this);

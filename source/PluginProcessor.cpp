@@ -22,6 +22,12 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     {
         m_tree_state.addParameterListener("macro" + juce::String(i) + "ID", this);
     }
+
+    // Start discovery here — in the Processor, not the Editor.
+    // The Editor is only alive while the GUI window is open; the Processor
+    // lives for the full plugin lifetime. Discovery must run even when the
+    // GUI is closed so streaming continues in the background.
+    m_stream_manager.startDiscovery();
 }
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()
