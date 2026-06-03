@@ -56,13 +56,10 @@ private:
     juce::Viewport m_view_port;
 
     // Streaming UI components
-    juce::TextButton m_stream_button { "Start Streaming" };
-    juce::Label m_status_label { "StatusLabel", "Disconnected" };
-    juce::Label m_ip_label { "IPLabel", "Target IP:" };
-    juce::TextEditor m_ip_input;
-    juce::Label m_port_label { "PortLabel", "Port:" };
-    juce::TextEditor m_port_input;
-    juce::Label m_stats_label { "StatsLabel", "" };
+    juce::TextButton m_stream_button { "Stop Streaming" };
+    juce::Label m_status_label  { "StatusLabel",  "Searching for Mix2Go App..." };
+    juce::Label m_device_label  { "DeviceLabel",  "" };
+    juce::Label m_stats_label   { "StatsLabel",   "" };
 
     void initStreamingUI();
     void onStreamButtonClicked();

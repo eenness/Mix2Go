@@ -9,6 +9,19 @@ set(FORMATS Standalone AU VST3)
 
 project(Mix2Go VERSION 0.0.1)
 
+# ── libopus (FetchContent) ────────────────────────────────────────────────────
+include(FetchContent)
+FetchContent_Declare(
+    opus
+    GIT_REPOSITORY https://gitlab.xiph.org/xiph/opus.git
+    GIT_TAG        v1.5.2
+    GIT_SHALLOW    TRUE
+)
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(opus)
+# ─────────────────────────────────────────────────────────────────────────────
+
 add_subdirectory(modules/JUCE)
 
 # Project configuration
@@ -65,7 +78,8 @@ target_compile_features(SharedCode INTERFACE cxx_std_20)
 target_include_directories(SharedCode INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/source"
         "${CMAKE_CURRENT_SOURCE_DIR}/modules/JUCE/modules"
-        "${CMAKE_BINARY_DIR}/AudioPluginData" # Include directory for AudioPluginData
+        "${CMAKE_BINARY_DIR}/AudioPluginData"
+        "${opus_SOURCE_DIR}/include"
 )
 
 # Set JUCE flags for SharedCode
@@ -105,6 +119,7 @@ add_dependencies(${PROJECT_NAME} AudioPluginData)
  target_link_libraries("${PROJECT_NAME}" PRIVATE
          SharedCode
          AudioPluginData
+         opus
          juce::juce_audio_basics
          juce::juce_audio_devices
          juce::juce_audio_formats

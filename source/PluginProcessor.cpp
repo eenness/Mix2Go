@@ -15,6 +15,9 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     m_parameters = std::make_unique<viator::parameters::parameters>(m_tree_state);
 
     m_processors.clear();
+
+    // Start UDP discovery so the VST auto-connects when the Mix2Go app broadcasts.
+    m_stream_manager.startDiscovery();
     //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
     //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
 
@@ -22,6 +25,12 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     {
         m_tree_state.addParameterListener("macro" + juce::String(i) + "ID", this);
     }
+
+    // Start discovery here — in the Processor, not the Editor.
+    // The Editor is only alive while the GUI window is open; the Processor
+    // lives for the full plugin lifetime. Discovery must run even when the
+    // GUI is closed so streaming continues in the background.
+    m_stream_manager.startDiscovery();
 }
 
 AudioPluginAudioProcessor::~AudioPluginAudioProcessor()

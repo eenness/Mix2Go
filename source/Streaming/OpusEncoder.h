@@ -113,12 +113,13 @@ private:
             m_encoder = nullptr;
             return;
         }
-        opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(128000));
-        opus_encoder_ctl(m_encoder, OPUS_SET_COMPLEXITY(8));
-        opus_encoder_ctl(m_encoder, OPUS_SET_INBAND_FEC(1));        // FEC for loss concealment
-        opus_encoder_ctl(m_encoder, OPUS_SET_PACKET_LOSS_PERC(5));  // assume ~5% loss
+        opus_encoder_ctl(m_encoder, OPUS_SET_BITRATE(256000));
+        opus_encoder_ctl(m_encoder, OPUS_SET_COMPLEXITY(10));        // max quality
+        opus_encoder_ctl(m_encoder, OPUS_SET_INBAND_FEC(1));         // FEC for loss concealment
+        opus_encoder_ctl(m_encoder, OPUS_SET_PACKET_LOSS_PERC(1));   // target ≤1% loss
+        opus_encoder_ctl(m_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_MUSIC)); // music optimised
 
-        DBG("[OpusEncoder] Created: 48000 Hz / 2ch / 128 kbps / FEC on");
+        DBG("[OpusEncoder] Created: 48000 Hz / 2ch / 256 kbps / complexity=10 / FEC on / music mode");
     }
 
     void destroyEncoder()
@@ -132,14 +133,17 @@ private:
 
     void encodeFrame(PacketCallback& callback)
     {
-        // Interleave L + R float → int16
+        // Interleave L + R float → int16.
+        // jlimit clamps to [-1, 1] as a safety net for resampler overshoot only.
+        // Master-bus audio is already properly leveled, so this never fires in practice.
+        // No soft-knee, no nonlinear shaping — raw passthrough for all valid audio.
         m_int16Buffer.resize(m_frameSize * 2);
         for (int i = 0; i < m_frameSize; ++i)
         {
-            float l = (i < static_cast<int>(m_accumL.size())) ? m_accumL[i] : 0.0f;
-            float r = (i < static_cast<int>(m_accumR.size())) ? m_accumR[i] : 0.0f;
-            l = juce::jlimit(-1.0f, 1.0f, l);
-            r = juce::jlimit(-1.0f, 1.0f, r);
+            const float l = juce::jlimit(-1.0f, 1.0f,
+                (i < static_cast<int>(m_accumL.size())) ? m_accumL[i] : 0.0f);
+            const float r = juce::jlimit(-1.0f, 1.0f,
+                (i < static_cast<int>(m_accumR.size())) ? m_accumR[i] : 0.0f);
             m_int16Buffer[i * 2]     = static_cast<opus_int16>(l * 32767.0f);
             m_int16Buffer[i * 2 + 1] = static_cast<opus_int16>(r * 32767.0f);
         }
