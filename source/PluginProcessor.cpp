@@ -16,20 +16,14 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
 
     m_processors.clear();
 
-    // Start UDP discovery so the VST auto-connects when the Mix2Go app broadcasts.
-    m_stream_manager.startDiscovery();
-    //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
-    //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
-
     for (int i = 0; i < 10; ++i)
     {
         m_tree_state.addParameterListener("macro" + juce::String(i) + "ID", this);
     }
 
-    // Start discovery here — in the Processor, not the Editor.
-    // The Editor is only alive while the GUI window is open; the Processor
-    // lives for the full plugin lifetime. Discovery must run even when the
-    // GUI is closed so streaming continues in the background.
+    // Start UDP discovery in the Processor (not the Editor) so auto-connect
+    // survives GUI open/close cycles.  Called once — startDiscovery() is a no-op
+    // if the thread is already running.
     m_stream_manager.startDiscovery();
 }
 
@@ -178,13 +172,27 @@ void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
         }
     }
 
-    // Prepare streaming with audio settings
+    // Re-prepare the encoder for the new sample rate / buffer size.
+    // If the DAW changes these while streaming (common on Windows hosts),
+    // the encoder resets cleanly without dropping the network connection.
     m_stream_manager.prepare(sampleRate, samplesPerBlock, getTotalNumInputChannels());
 }
 
 void AudioPluginAudioProcessor::releaseResources()
 {
-    m_stream_manager.stopStreaming();
+    // Do NOT stop streaming here.
+    //
+    // releaseResources() is called by the DAW whenever it reconfigures the
+    // audio engine — on transport stop, buffer-size changes, plugin deactivation,
+    // and especially on Windows hosts (FL Studio, Ableton) which call
+    // prepareToPlay/releaseResources in rapid pairs during initialisation.
+    //
+    // Stopping streaming here causes a 1-second disconnect loop:
+    //   discovery fires → startStreaming() → releaseResources() → stopStreaming()
+    //   → discovery fires again → repeat forever.
+    //
+    // Streaming is a network concern, not a DSP concern.  It stays alive for
+    // the full plugin lifetime and is only stopped in ~AudioStreamManager().
 }
 
 bool AudioPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
