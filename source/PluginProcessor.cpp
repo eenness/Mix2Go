@@ -15,6 +15,9 @@ AudioPluginAudioProcessor::AudioPluginAudioProcessor()
     m_parameters = std::make_unique<viator::parameters::parameters>(m_tree_state);
 
     m_processors.clear();
+
+    // Start UDP discovery so the VST auto-connects when the Mix2Go app broadcasts.
+    m_stream_manager.startDiscovery();
     //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
     //addProcessor(viator::dsp::processors::ProcessorType::kClipper);
 

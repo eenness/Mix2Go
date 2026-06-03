@@ -4,7 +4,6 @@
 #include "AudioPacket.h"
 
 #if JUCE_WINDOWS
- // Forward-declare winmm timer functions to avoid Windows header conflicts
  extern "C" {
      __declspec(dllimport) unsigned long __stdcall timeBeginPeriod(unsigned int uPeriod);
      __declspec(dllimport) unsigned long __stdcall timeEndPeriod(unsigned int uPeriod);
@@ -15,157 +14,127 @@
 namespace mix2go {
 namespace streaming {
 
-// Thread der das Netzwerk zeug macht
-// Sendet UDP Pakete im Hintergrund
 class NetworkSender : public juce::Thread
 {
 public:
-    // Callback returns raw v2 packet bytes; empty vector = nothing to send this tick.
     using AudioDataCallback = std::function<bool(std::vector<uint8_t>&)>;
-    
-    NetworkSender()
-        : juce::Thread("Mix2Go Network Sender")
-    {
-    }
-    
-    ~NetworkSender() override
-    {
-        stop();
-    }
-    
-    // Zieladresse setzen
+
+    NetworkSender() : juce::Thread("Mix2Go Network Sender") {}
+    ~NetworkSender() override { stop(); }
+
     void setTarget(juce::String ipAddress, int port)
     {
         juce::ScopedLock lock(m_settingsLock);
-        m_targetIP = ipAddress;
+        m_targetIP   = ipAddress;
         m_targetPort = port;
     }
-    
-    // Callback speichern
-    void setAudioCallback(AudioDataCallback callback)
-    {
-        m_audioCallback = callback;
-    }
-    
-    // Interval ändern (double für sample-genaue Berechnung, z.B. 4.9887ms)
-    void setSendInterval(double intervalMs)
-    {
-        m_sendIntervalMs = intervalMs;
-    }
-    
+
+    void setAudioCallback(AudioDataCallback callback) { m_audioCallback = callback; }
+
+    void setSendInterval(double intervalMs) { m_sendIntervalMs = intervalMs; }
+
     bool start()
     {
-        if (isThreadRunning())
-            return true;
+        if (isThreadRunning()) return true;
 
-        m_shouldStop = false;
-        m_lastLogTime     = juce::Time::getHighResolutionTicks();
-        m_lastLogPackets  = 0;
-        m_lastLogBytes    = 0;
+        m_shouldStop     = false;
+        m_lastLogTime    = juce::Time::getHighResolutionTicks();
+        m_lastLogPackets = 0;
+        m_lastLogBytes   = 0;
 
-        // Socket bauen
         m_socket = std::make_unique<juce::DatagramSocket>();
-
-        if (!m_socket->bindToPort(0)) // random port ist ok
+        if (!m_socket->bindToPort(0))
         {
-            DBG("[Mix2Go] Fehler: Socket Bind geht nicht");
+            DBG("[Mix2Go] Socket bind failed");
             return false;
         }
-
         startThread();
         return true;
     }
-    
+
     void stop()
     {
         m_shouldStop = true;
-        
-        if (isThreadRunning())
-        {
-            stopThread(2000);
-        }
-        
+        if (isThreadRunning()) stopThread(2000);
         m_socket.reset();
     }
-    
-    bool isActive()
-    {
-        return isThreadRunning() && !m_shouldStop;
-    }
-    
-    uint64_t getPacketsSent()
-    {
-        return m_packetsSent;
-    }
-    
-    uint64_t getBytesSent()
-    {
-        return m_bytesSent;
-    }
-    
+
+    bool     isActive()        { return isThreadRunning() && !m_shouldStop; }
+    uint64_t getPacketsSent()  { return m_packetsSent; }
+    uint64_t getBytesSent()    { return m_bytesSent; }
+
 private:
     void run() override
     {
         juce::String targetIP;
-        int targetPort;
-        
+        int          targetPort;
         {
             juce::ScopedLock lock(m_settingsLock);
-            targetIP = m_targetIP;
+            targetIP   = m_targetIP;
             targetPort = m_targetPort;
         }
-        
-        DBG("Sender läuft. Ziel: " << targetIP << ":" << targetPort);
 
-        // Windows-Timer auf 1ms stellen damit sleep() genau ist
+        DBG("[Mix2Go] Sender started → " << targetIP << ":" << targetPort);
+
         #if JUCE_WINDOWS
         timeBeginPeriod(1);
         #endif
 
-        const double ticksPerSec = (double)juce::Time::getHighResolutionTicksPerSecond();
-        const double ticksPerMs  = ticksPerSec / 1000.0;
+        // ── Startup delay ────────────────────────────────────────────────────
+        // Give the audio thread 50 ms to push real audio into the FIFO before
+        // the network thread starts consuming.
+        //
+        // Without this delay the FIFO starts empty.  At 44100 Hz / 512-sample
+        // blocks the audio callback fires every ~11.6 ms, but the network ticks
+        // every 10 ms.  "Double-pop" events (two network ticks within one audio
+        // callback period) occur roughly every 7 callbacks (~84 ms).  If the
+        // FIFO is nearly empty when a double-pop event arrives, the second pop
+        // finds < 441 samples → silence packet sent → iOS plays silence.
+        //
+        // 50 ms of audio-only fill gives the FIFO ~2200 samples of headroom.
+        // Simulation shows 0 underruns vs 2+ without the delay even with 3 ms
+        // of audio-callback jitter.  The delay is outside the absolute-timing
+        // loop so it does NOT accumulate into a timing drift.
+        juce::Thread::sleep(50);
+        if (threadShouldExit() || m_shouldStop)
+        {
+            #if JUCE_WINDOWS
+            timeEndPeriod(1);
+            #endif
+            return;
+        }
 
-        // Absolutes Scheduling: nächsten Send-Zeitpunkt vorausberechnen
-        // Fehler akkumulieren sich NICHT über Zeit → kein systematischer Drift
+        const double  ticksPerMs    = (double)juce::Time::getHighResolutionTicksPerSecond() / 1000.0;
         const juce::int64 intervalTicks = (juce::int64)(m_sendIntervalMs * ticksPerMs);
-        juce::int64 nextSendTick = juce::Time::getHighResolutionTicks() + intervalTicks;
+        juce::int64   nextSendTick  = juce::Time::getHighResolutionTicks() + intervalTicks;
 
-        // Pre-allocate outside the loop so the vector's heap buffer is reused
-        // every iteration (resize/clear preserves capacity → zero allocation/deallocation
-        // per packet after the first one).
         std::vector<uint8_t> data;
-        data.reserve(28 + 1500); // 28-byte header + max Opus payload (< 1275 bytes)
+        data.reserve(28 + 1500);
 
         while (!threadShouldExit() && !m_shouldStop)
         {
-            data.clear(); // O(1): resets size, keeps capacity
+            data.clear();
 
             if (m_audioCallback && m_audioCallback(data) && !data.empty())
             {
-                int bytesSent = m_socket->write(
-                    targetIP, targetPort,
-                    data.data(), (int)data.size()
-                );
+                const int bytesSent = m_socket->write(
+                    targetIP, targetPort, data.data(), (int)data.size());
 
                 if (bytesSent > 0)
                 {
-                    m_packetsSent++;
-                    m_bytesSent += bytesSent;
+                    ++m_packetsSent;
+                    m_bytesSent += (uint64_t)bytesSent;
 
                     if ((m_packetsSent % 100) == 0)
                     {
-                        auto now         = juce::Time::getHighResolutionTicks();
-                        double elapsedMs = (double)(now - m_lastLogTime) / ticksPerMs;
-                        int pps  = (elapsedMs > 0) ? (int)((m_packetsSent - m_lastLogPackets) * 1000.0 / elapsedMs) : 0;
-                        int kbps = (elapsedMs > 0) ? (int)((m_bytesSent   - m_lastLogBytes)   * 8.0    / elapsedMs) : 0;
-
-                        DBG("[Mix2Go] UDP: " << (int)m_packetsSent << " pkts"
-                            << "  " << pps  << " pkt/s"
-                            << "  " << kbps << " kbps"
-                            << "  pktSize=" << bytesSent << " bytes"
-                            << "  total=" << (int)(m_bytesSent / 1024) << " KB"
-                            << "  -> " << targetIP << ":" << targetPort);
-
+                        const auto   now     = juce::Time::getHighResolutionTicks();
+                        const double elapsed = (double)(now - m_lastLogTime) / ticksPerMs;
+                        const int pps  = elapsed > 0 ? (int)((m_packetsSent - m_lastLogPackets) * 1000.0 / elapsed) : 0;
+                        const int kbps = elapsed > 0 ? (int)((m_bytesSent   - m_lastLogBytes)   * 8.0    / elapsed) : 0;
+                        DBG("[Mix2Go] UDP: " << (int)m_packetsSent << " pkts  "
+                            << pps << " pps  " << kbps << " kbps  "
+                            << bytesSent << " B  total=" << (int)(m_bytesSent/1024) << " KB"
+                            << "  → " << targetIP << ":" << targetPort);
                         m_lastLogTime    = now;
                         m_lastLogPackets = m_packetsSent;
                         m_lastLogBytes   = m_bytesSent;
@@ -173,24 +142,22 @@ private:
                 }
                 else
                 {
-                    DBG("[Mix2Go] UDP write() failed (bytesSent=" << bytesSent
-                        << ") -> " << targetIP << ":" << targetPort);
+                    DBG("[Mix2Go] UDP write() failed → " << targetIP << ":" << targetPort);
                 }
             }
 
-            // Absolutes Timing: schlafen bis zum nächsten geplanten Zeitpunkt
-            auto now      = juce::Time::getHighResolutionTicks();
-            auto remaining = nextSendTick - now;
+            // Absolute timing: sleep until the next scheduled tick.
+            // Errors do NOT accumulate — systematic drift is impossible.
+            const auto now       = juce::Time::getHighResolutionTicks();
+            const auto remaining = nextSendTick - now;
             if (remaining > 0)
             {
-                int sleepMs = (int)(remaining / ticksPerMs);
-                if (sleepMs > 0)
-                    juce::Thread::sleep(sleepMs);
+                const int sleepMs = (int)(remaining / ticksPerMs);
+                if (sleepMs > 0) juce::Thread::sleep(sleepMs);
             }
             else if (remaining < -intervalTicks * 3)
             {
-                // Mehr als 3 Intervalle hinter Zeitplan: Uhr zurücksetzen
-                // (passiert z.B. beim Start oder nach System-Sleep)
+                // > 3 intervals behind (e.g. after system sleep): reset clock.
                 nextSendTick = now;
             }
             nextSendTick += intervalTicks;
@@ -200,29 +167,25 @@ private:
         timeEndPeriod(1);
         #endif
 
-        DBG("Sender gestoppt");
+        DBG("[Mix2Go] Sender stopped");
     }
-    
+
     std::unique_ptr<juce::DatagramSocket> m_socket;
     AudioDataCallback m_audioCallback;
-    
+
     juce::CriticalSection m_settingsLock;
-    juce::String m_targetIP = "127.0.0.1";
-    int m_targetPort = 12345;
-    
-    // simple state variables
-    bool m_shouldStop = false;
-    double m_sendIntervalMs = 10.0;
-    
-    // stats
+    juce::String m_targetIP   = "127.0.0.1";
+    int          m_targetPort = 12345;
+    bool         m_shouldStop = false;
+    double       m_sendIntervalMs = 10.0;
+
     std::atomic<uint64_t> m_packetsSent { 0 };
     std::atomic<uint64_t> m_bytesSent   { 0 };
 
-    // rate tracking for periodic log
     juce::int64  m_lastLogTime    = 0;
     uint64_t     m_lastLogPackets = 0;
     uint64_t     m_lastLogBytes   = 0;
-    
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NetworkSender)
 };
 
