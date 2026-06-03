@@ -63,13 +63,24 @@ public:
 
         m_discovery.onLost = [this]()
         {
+            // Discovery heartbeat timed out — the app stopped broadcasting.
+            // Do NOT stop streaming here.
+            //
+            // Discovery broadcasts and the audio UDP stream are independent:
+            // the app may have stopped advertising (screen off, background mode,
+            // WiFi hiccup) while the audio destination IP:port is still valid
+            // and packets are still flowing fine.
+            //
+            // On Windows, Firewall often lets the first broadcast through then
+            // blocks the rest, causing a 3-second onLost loop that permanently
+            // disconnects the audio.
+            //
+            // Streaming stops only when:
+            //   • The plugin is unloaded  (~AudioStreamManager)
+            //   • The user manually disconnects (future UI button)
             m_discoveredIP   = "";
             m_discoveredPort = 0;
-            if (isStreaming())
-            {
-                DBG("[Discovery] App lost — stopping stream");
-                stopStreaming();
-            }
+            DBG("[Discovery] Heartbeat lost — UI updated, stream kept alive");
             notifyListeners();
         };
     }
