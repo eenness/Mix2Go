@@ -133,14 +133,17 @@ private:
 
     void encodeFrame(PacketCallback& callback)
     {
-        // Interleave L + R float → int16
+        // Interleave L + R float → int16.
+        // jlimit clamps to [-1, 1] as a safety net for resampler overshoot only.
+        // Master-bus audio is already properly leveled, so this never fires in practice.
+        // No soft-knee, no nonlinear shaping — raw passthrough for all valid audio.
         m_int16Buffer.resize(m_frameSize * 2);
         for (int i = 0; i < m_frameSize; ++i)
         {
-            float l = (i < static_cast<int>(m_accumL.size())) ? m_accumL[i] : 0.0f;
-            float r = (i < static_cast<int>(m_accumR.size())) ? m_accumR[i] : 0.0f;
-            l = juce::jlimit(-1.0f, 1.0f, l);
-            r = juce::jlimit(-1.0f, 1.0f, r);
+            const float l = juce::jlimit(-1.0f, 1.0f,
+                (i < static_cast<int>(m_accumL.size())) ? m_accumL[i] : 0.0f);
+            const float r = juce::jlimit(-1.0f, 1.0f,
+                (i < static_cast<int>(m_accumR.size())) ? m_accumR[i] : 0.0f);
             m_int16Buffer[i * 2]     = static_cast<opus_int16>(l * 32767.0f);
             m_int16Buffer[i * 2 + 1] = static_cast<opus_int16>(r * 32767.0f);
         }
