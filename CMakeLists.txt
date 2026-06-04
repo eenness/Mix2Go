@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.23.1)
 
+# macOS architecture settings MUST come before project() and FetchContent so
+# that all sub-builds (opus, JUCE) inherit the same architectures.
+if(APPLE)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum OS X deployment version" FORCE)
+  set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Architectures" FORCE)
+  set(CMAKE_XCODE_ATTRIBUTE_MACOSX_DEPLOYMENT_TARGET[arch=arm64] "11.0" CACHE STRING "arm64 minimum deployment target" FORCE)
+endif()
+
 # General setup
 set(PROJECT_NAME "Mix2Go")
 set(CURRENT_VERSION "0.0.1")
@@ -26,13 +34,6 @@ add_subdirectory(modules/JUCE)
 
 # Project configuration
 set(CMAKE_CXX_STANDARD 20)   # matches cxx_std_20 required by SharedCode
-
-# macOS-specific settings
-if(APPLE)
- set (CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "Minimum OS X deployment version" FORCE)
- set (CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Architectures" FORCE)
- set (CMAKE_XCODE_ATTRIBUTE_MACOSX_DEPLOYMENT_TARGET[arch=arm64] "11.0" CACHE STRING "arm 64 minimum deployment target" FORCE)
-endif()
 
 if (UNIX AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
  find_package(PkgConfig REQUIRED)
