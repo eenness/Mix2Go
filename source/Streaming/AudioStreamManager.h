@@ -135,9 +135,23 @@ public:
     // Setup machen
     void prepare(double sampleRate, int samplesPerBlock, int numChannels)
     {
-        m_sampleRate = sampleRate;
+        // DAW calls prepareToPlay() on transport pause/stop — sometimes with a
+        // different samplesPerBlock (Ableton uses 128 when stopped, 512 playing).
+        // Resetting the FIFO and encoder mid-stream causes a dropout that shows
+        // up as a sequence gap → packet loss on the Flutter side.
+        // Only reset on actual format changes (SR or channel count).
+        const bool formatChanged = (sampleRate  != m_sampleRate ||
+                                    numChannels != m_numChannels);
+        m_sampleRate      = sampleRate;
         m_samplesPerBlock = samplesPerBlock;
-        m_numChannels = numChannels;
+        m_numChannels     = numChannels;
+
+        if (m_isStreaming && !formatChanged)
+        {
+            const double exactIntervalMs = (double)m_packetSamples / sampleRate * 1000.0;
+            m_sender.setSendInterval(exactIntervalMs);
+            return;
+        }
 
         // Prepare Opus encoder: 10ms frames (480 samples @ 48kHz)
         m_opusEncoder.prepare(sampleRate, numChannels);
@@ -355,17 +369,19 @@ private:
             m_lastLoggedOverruns = overruns;
         }
 
-        // Pop one Opus input frame from FIFO into the pre-allocated buffer.
-        // m_tempBuffer was sized in prepare() — no heap allocation in hot path.
-        if (!m_fifo.pop(m_tempBuffer, m_packetSamples))
-        {
-            ++m_networkUnderruns;
-            if (m_networkUnderruns == 1 || (m_networkUnderruns % 100) == 0)
-                DBG("[Mix2Go] FIFO underrun: ready=" << m_fifo.getNumReady()
-                    << " needed=" << m_packetSamples
-                    << " total=" << (int)m_networkUnderruns);
-            m_tempBuffer.clear(); // encode silence → keeps seq numbers continuous
-        }
+        // When the FIFO is starved — DAW transport stopped/paused, or the FIFO
+        // hasn't filled yet at startup — encode SILENCE but do NOT count it as an
+        // underrun.  Checking readiness BEFORE pop() matters: pop() increments the
+        // FIFO underrun counter on every empty call, which is what spammed the VST
+        // UI counter on transport start/pause.  We still send the silence frame so
+        // the sequence numbers stay continuous and playback resumes seamlessly
+        // (no iPhone-side rebuffer) the instant the DAW plays again.
+        // During active playback the FIFO always holds ≥ one frame (100 ms
+        // headroom), so this branch only triggers at the transport edges.
+        if (m_fifo.getNumReady() < m_packetSamples)
+            m_tempBuffer.clear(); // silence, uncounted
+        else
+            m_fifo.pop(m_tempBuffer, m_packetSamples);
 
         bool packetReady = false;
 
