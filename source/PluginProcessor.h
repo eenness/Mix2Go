@@ -93,6 +93,12 @@ private:
 
     std::atomic<float> meterL { 0.0f };     //linken und rechten kanal anlegen um ihn dann zu getten
     std::atomic<float> meterR { 0.0f };
+
+    // Transport-aware fade: ramps the streamed audio in/out over a few ms at
+    // play/pause edges so abrupt waveform cuts don't click on the receiver
+    // (audible "underruns" when spamming the DAW transport). Hosts without a
+    // transport (Standalone) are treated as always playing — see processBlock.
+    juce::SmoothedValue<float> m_streamGain { 1.0f };
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessor)
 };

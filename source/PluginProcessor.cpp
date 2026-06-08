@@ -176,6 +176,9 @@ void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPer
     // If the DAW changes these while streaming (common on Windows hosts),
     // the encoder resets cleanly without dropping the network connection.
     m_stream_manager.prepare(sampleRate, samplesPerBlock, getTotalNumInputChannels());
+
+    // ~8 ms transport fade — long enough to kill clicks, short enough to feel instant.
+    m_streamGain.reset(sampleRate, 0.008);
 }
 
 void AudioPluginAudioProcessor::releaseResources()
@@ -251,6 +254,21 @@ void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // Push audio to streaming FIFO if streaming is active
     if (m_stream_manager.isStreaming())
     {
+        // Transport-aware fade: when the DAW transport is stopped/paused the
+        // audio cuts abruptly, and abrupt waveform jumps click on the receiver
+        // (the audible "underruns" when spamming play/pause). Ramp a gain to 0
+        // when stopped and back to 1 when playing so every transition is a short
+        // fade instead of a hard edge.
+        // Hosts without a transport (Standalone) report no position → default to
+        // playing so audio always flows there.
+        bool isPlaying = true;
+        if (auto* ph = getPlayHead())
+            if (auto pos = ph->getPosition())
+                isPlaying = pos->getIsPlaying();
+
+        m_streamGain.setTargetValue(isPlaying ? 1.0f : 0.0f);
+        m_streamGain.applyGain(buffer, buffer.getNumSamples());
+
         m_stream_manager.pushAudioData(buffer);
     }
 
