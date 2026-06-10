@@ -1,468 +1,385 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <cmath>
+
+using LAF = mix2go::gui::Mix2GoLookAndFeel;
+namespace S = mix2go::streaming;
 
 //==============================================================================
-AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor &p)
-        : AudioProcessorEditor(&p), processorRef(p), m_rack(processorRef)
+AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor& p)
+        : AudioProcessorEditor(&p), processorRef(p)
 {
-    juce::ignoreUnused(processorRef);
+    setLookAndFeel(&m_laf);
 
-    const auto items = viator::globals::Oversampling::items;
-    setComboBoxProps(m_oversampling_menu, items);
+    m_stream_button.setLookAndFeel(&m_laf);
+    m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
+    addAndMakeVisible(m_stream_button);
 
-    addAndMakeVisible(m_rack);
-    m_rack.addActionListener(this);
-    m_rack.rebuild_editors();
-    initMacroKnobs();
-    initStreamingUI();  // Initialize streaming controls
-
-    m_view_port.setViewedComponent(&m_rack, false);
-    m_view_port.setScrollBarsShown(false, true);
-    addAndMakeVisible(m_view_port);
-
-    refreshMacroMappings();
-
-    // Register as stream listener
     processorRef.getStreamManager().addListener(this);
 
-    // Discovery is started by the Processor constructor — it runs whether the GUI
-    // is open or not.  Here we just sync the UI to the current state.
-    {
-        auto& sm = processorRef.getStreamManager();
-        const int port = sm.discoveryBoundPort();
-
-        if (sm.isStreaming())
-        {
-            m_status_label.setText("● Streaming", juce::dontSendNotification);
-            m_status_label.setColour(juce::Label::textColourId, juce::Colours::limegreen);
-            m_device_label.setText(sm.discoveredIP() + ":" + juce::String(sm.discoveredPort()),
-                                   juce::dontSendNotification);
-            m_stream_button.setButtonText("Stop");
-            m_stream_button.setEnabled(true);
-        }
-        else if (port <= 0)
-        {
-            m_status_label.setText("UDP bind failed! Ports 40051-40059 all in use?",
-                                   juce::dontSendNotification);
-            m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
-            m_stream_button.setButtonText("Fehler");
-            m_stream_button.setEnabled(false);
-        }
-        else
-        {
-            m_status_label.setText("Searching for Mix2Go App... (UDP " + juce::String(port) + ")",
-                                   juce::dontSendNotification);
-            m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-            m_stream_button.setButtonText("Searching...");
-            m_stream_button.setEnabled(false);
-        }
-    }
-
-    setSize(1500, 700);
-    startTimerHz(30);                       //setzt das intervall vom pegel aktualisieren auf 30ms
+    syncButton();
+    setSize(880, 480);
+    setResizable(true, true);
+    setResizeLimits(680, 380, 2200, 1200);
+    startTimerHz(30);
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
 {
-    // NOTE: do NOT call stopDiscovery() here — discovery lives in the Processor
-    // and must continue running after the GUI window is closed.
-
-    // Unregister stream listener
     processorRef.getStreamManager().removeListener(this);
-
-    for (auto &macro: m_macro_knobs)
-    {
-        macro.removeMouseListener(this);
-    }
-
-    m_rack.removeActionListener(this);
+    m_stream_button.setLookAndFeel(nullptr);
+    setLookAndFeel(nullptr);
 }
 
 //==============================================================================
-void AudioPluginAudioProcessorEditor::paint(juce::Graphics &g)
+AudioPluginAudioProcessorEditor::UiState
+AudioPluginAudioProcessorEditor::currentUiState() const
 {
-    g.fillAll(juce::Colours::black.brighter(0.12f));
-
-    g.setColour(juce::Colours::black);
-    g.drawRect(0, 0, getWidth(), getHeight(), 3);
-
-    // Breite der Pegelbalken
-    const int meterWidth = 40;
-
-    // Maximale Höhe der Pegel
-    const int meterHeight = getHeight() - 40;
-
-    // X-Positionen für Links und Rechts
-    int leftX = 40;
-    int rightX = 120;
-
-    // Unterkante (Pegel wachsen nach oben)
-    int bottom = getHeight() - 20;
-
-    // Umrechnung von 0..1 auf Pixelhöhe
-    int hL = juce::jlimit(0, meterHeight, (int)(meterL * meterHeight));
-    int hR = juce::jlimit(0, meterHeight, (int)(meterR * meterHeight));
-
-    // Farbe setzen
-    g.setColour(juce::Colours::green);
-
-    // Linken Pegel zeichnen
-    g.fillRect(leftX, bottom - hL, meterWidth, hL);
-
-    // Rechten Pegel zeichnen
-    g.fillRect(rightX, bottom - hR, meterWidth, hR);
+    auto& sm = processorRef.getStreamManager();
+    switch (sm.getState())
+    {
+        case S::StreamState::Streaming:
+            return { "STREAMING", "Streaming live audio to your device", "Streaming",
+                     LAF::stStreaming(), true, false };
+        case S::StreamState::Connecting:
+            return { "CONNECTING", "Establishing connection...", "Connecting",
+                     LAF::stConnecting(), false, true };
+        case S::StreamState::Error:
+            return { "ERROR", "Stream failed - check the network", "Error",
+                     LAF::stError(), false, false };
+        case S::StreamState::Disconnected:
+        default:
+            if (sm.isAutoConnectEnabled())
+                return { "SEARCHING", "Searching for the Mix2Go app...", "Searching",
+                         LAF::stSearching(), false, true };
+            return { "STOPPED", "Auto-connect disabled", "Stopped",
+                     LAF::stStopped(), false, false };
+    }
 }
 
+//==============================================================================
+void AudioPluginAudioProcessorEditor::paint(juce::Graphics& g)
+{
+    auto& sm = processorRef.getStreamManager();
+    const auto u = currentUiState();
+
+    auto b = getLocalBounds().toFloat();
+    const float W = b.getWidth(), H = b.getHeight();
+    const float topH   = juce::jlimit(48.0f, 72.0f, H * 0.12f);
+    const float statsH = juce::jlimit(40.0f, 60.0f, H * 0.10f);
+
+    g.fillAll(LAF::bg());
+
+    // ── Top bar ──────────────────────────────────────────────────────────
+    auto top = b.removeFromTop(topH);
+    g.setColour(LAF::surface1());
+    g.fillRect(top);
+    g.setColour(LAF::borderDim());
+    g.drawHorizontalLine((int) top.getBottom(), 0.0f, W);
+
+    const float iconSz = topH * 0.46f;
+    auto iconR = juce::Rectangle<float>(20.0f, top.getCentreY() - iconSz / 2.0f, iconSz, iconSz);
+    paintLogo(g, iconR);
+    paintWordmark(g, iconR.getRight() + 12.0f, top.getCentreY());
+
+    // pill + device, to the left of the button
+    auto pillR = juce::Rectangle<float>(iconR.getRight() + 130.0f, top.getCentreY() - 11.0f, 118.0f, 22.0f);
+    paintPill(g, pillR, u.colour, u.pill);
+
+    juce::String dev = sm.hasDiscoveredDevice()
+        ? sm.discoveredIP() + ":" + juce::String(sm.discoveredPort())
+        : "UDP " + juce::String(sm.discoveryBoundPort());
+    g.setColour(LAF::textMuted());
+    g.setFont(juce::Font(12.0f));
+    g.drawText(dev, juce::Rectangle<float>(pillR.getRight() + 14.0f, top.getY(), 220.0f, topH),
+               juce::Justification::centredLeft, false);
+
+    // ── Stats bar ────────────────────────────────────────────────────────
+    auto stats = b.removeFromBottom(statsH);
+    paintStatsBar(g, stats, u);
+
+    // ── Hero ─────────────────────────────────────────────────────────────
+    auto hero = b.reduced(30.0f, 18.0f);
+    auto meterArea = hero.removeFromRight(juce::jlimit(220.0f, 320.0f, W * 0.30f));
+    meterArea = meterArea.withTrimmedLeft(20.0f);
+    paintMeters(g, meterArea.removeFromTop(juce::jmin(96.0f, meterArea.getHeight())));
+
+    // big status word
+    g.setColour(u.colour);
+    g.setFont(LAF::display(juce::jlimit(40.0f, 72.0f, H * 0.14f)));
+    auto wordR = hero.removeFromTop(hero.getHeight() * 0.52f);
+    g.drawText(u.word, wordR, juce::Justification::bottomLeft, false);
+
+    // subtitle
+    g.setColour(LAF::textMuted());
+    g.setFont(juce::Font(13.5f));
+    g.drawText(u.subtitle, hero.removeFromTop(24.0f), juce::Justification::topLeft, false);
+
+    // device badge (only when found)
+    if (sm.hasDiscoveredDevice())
+    {
+        auto badge = juce::Rectangle<float>(hero.getX(), hero.getY() + 8.0f, 220.0f, 26.0f);
+        g.setColour(LAF::surface2());
+        g.fillRoundedRectangle(badge, 7.0f);
+        g.setColour(LAF::borderNorm());
+        g.drawRoundedRectangle(badge, 7.0f, 1.0f);
+        g.setColour(LAF::textPrim());
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText(sm.discoveredIP() + " : " + juce::String(sm.discoveredPort()),
+                   badge.reduced(12.0f, 0.0f), juce::Justification::centredLeft, false);
+    }
+}
+
+//==============================================================================
+void AudioPluginAudioProcessorEditor::paintLogo(juce::Graphics& g, juce::Rectangle<float> r)
+{
+    const float s = r.getWidth() / 1024.0f;
+    const float x0 = r.getX(), y0 = r.getY();
+
+    // No background square — container-less logo (matches the transparent SVG).
+    static const float bx[] = { 168, 296, 424, 552, 680, 808 };
+    static const float by[] = { 546, 426, 290, 370, 460, 550 };
+    static const float bh[] = { 170, 360, 520, 420, 250, 110 };
+    static const float op[] = { 0.45f, 0.65f, 1.0f, 0.82f, 0.60f, 0.38f };
+
+    for (int i = 0; i < 6; ++i)
+    {
+        juce::Rectangle<float> bar(x0 + bx[i] * s, y0 + by[i] * s, 80.0f * s, bh[i] * s);
+        g.setGradientFill(LAF::accent(bar, op[i]));
+        g.fillRoundedRectangle(bar, 40.0f * s);
+    }
+
+    auto dot = juce::Point<float>(x0 + 856.0f * s, y0 + 230.0f * s);
+    g.setColour(LAF::gradStart().withAlpha(0.12f));
+    g.fillEllipse(juce::Rectangle<float>(220.0f * s, 220.0f * s).withCentre(dot));
+    auto dotR = juce::Rectangle<float>(144.0f * s, 144.0f * s).withCentre(dot);
+    g.setGradientFill(LAF::accent(dotR));
+    g.fillEllipse(dotR);
+}
+
+void AudioPluginAudioProcessorEditor::paintWordmark(juce::Graphics& g, float x, float cy)
+{
+    auto f = LAF::display(20.0f);
+    g.setFont(f);
+    auto seg = [&](const juce::String& t, juce::Colour c)
+    {
+        g.setColour(c);
+        const float w = (float) g.getCurrentFont().getStringWidth(t);
+        g.drawText(t, juce::Rectangle<float>(x, cy - 14.0f, w + 4.0f, 28.0f),
+                   juce::Justification::centredLeft, false);
+        x += w + 2.0f;
+    };
+    seg("MIX", LAF::textPrim());
+    seg("2",   LAF::gradStart());
+    seg("GO",  LAF::textPrim());
+}
+
+void AudioPluginAudioProcessorEditor::paintPill(juce::Graphics& g, juce::Rectangle<float> r,
+                                                juce::Colour col, const juce::String& label)
+{
+    g.setColour(LAF::surface2());
+    g.fillRoundedRectangle(r, r.getHeight() / 2.0f);
+    g.setColour(LAF::borderNorm());
+    g.drawRoundedRectangle(r, r.getHeight() / 2.0f, 1.0f);
+
+    auto dot = juce::Rectangle<float>(8.0f, 8.0f).withCentre(
+        { r.getX() + 13.0f, r.getCentreY() });
+    g.setColour(col);
+    g.fillEllipse(dot);
+
+    g.setFont(juce::Font(11.0f, juce::Font::bold));
+    g.drawText(label, r.withTrimmedLeft(24.0f), juce::Justification::centredLeft, false);
+}
+
+//==============================================================================
+void AudioPluginAudioProcessorEditor::paintMeters(juce::Graphics& g, juce::Rectangle<float> area)
+{
+    const bool streaming = processorRef.getStreamManager().isStreaming();
+
+    g.setColour(LAF::textMuted());
+    g.setFont(juce::Font(9.0f));
+    g.drawText("OUTPUT LEVEL", area.removeFromTop(14.0f), juce::Justification::topLeft, false);
+    area.removeFromTop(8.0f);
+
+    const float rowH = 24.0f;
+    paintMeterRow(g, area.removeFromTop(rowH), "L", streaming ? m_dispL : 0.0f);
+    area.removeFromTop(6.0f);
+    paintMeterRow(g, area.removeFromTop(rowH), "R", streaming ? m_dispR : 0.0f);
+}
+
+void AudioPluginAudioProcessorEditor::paintMeterRow(juce::Graphics& g, juce::Rectangle<float> row,
+                                                    const juce::String& ch, float level)
+{
+    level = juce::jlimit(0.0f, 1.0f, level);
+
+    auto labelR = row.removeFromLeft(16.0f);
+    g.setColour(LAF::gradStart());
+    g.setFont(LAF::display(12.0f));
+    g.drawText(ch, labelR, juce::Justification::centredLeft, false);
+
+    // Peak amplitude → dB. Map [-54 dB, 0 dB] to the bar so it reads like a
+    // DAW meter (a linear-amplitude bar looks far quieter for the same signal —
+    // the audio itself is unity-gain, this is purely the display scale).
+    const float db = 20.0f * std::log10(juce::jmax(level, 0.00002f));
+    const float norm = juce::jlimit(0.0f, 1.0f, (db + 54.0f) / 54.0f);
+
+    auto dbR = row.removeFromRight(38.0f);
+    g.setColour(LAF::textMuted());
+    g.setFont(juce::Font(10.0f));
+    g.drawText(db <= -54.0f ? "-inf" : juce::String(juce::roundToInt(db)),
+               dbR, juce::Justification::centredRight, false);
+
+    row.removeFromLeft(8.0f);
+    row.removeFromRight(8.0f);
+    auto track = juce::Rectangle<float>(row.getX(), row.getCentreY() - 5.0f, row.getWidth(), 10.0f);
+    g.setColour(LAF::borderDim());
+    g.fillRoundedRectangle(track, 5.0f);
+
+    if (norm > 0.005f)
+    {
+        juce::Graphics::ScopedSaveState save(g);
+        juce::Path clip;
+        clip.addRoundedRectangle(track, 5.0f);
+        g.reduceClipRegion(clip);
+        auto fill = track.withWidth(track.getWidth() * norm);
+        juce::ColourGradient grad(juce::Colour(0xff22c55e), track.getTopLeft(),
+                                  juce::Colour(0xffe8445a), track.getTopRight(), false);
+        grad.addColour(0.6, juce::Colour(0xff84cc16));
+        grad.addColour(0.85, juce::Colour(0xfff97316));
+        g.setGradientFill(grad);
+        g.fillRect(fill);
+    }
+}
+
+//==============================================================================
+void AudioPluginAudioProcessorEditor::paintStatsBar(juce::Graphics& g, juce::Rectangle<float> bar,
+                                                    const UiState& u)
+{
+    g.setColour(LAF::surface1());
+    g.fillRect(bar);
+    g.setColour(LAF::borderDim());
+    g.drawHorizontalLine((int) bar.getY(), 0.0f, bar.getWidth());
+
+    auto& sm = processorRef.getStreamManager();
+
+    if (! u.streaming)
+    {
+        const int pk = sm.discoveryPacketsReceived();
+        juce::String info = pk == 0
+            ? "Discovery: listening on UDP " + juce::String(sm.discoveryBoundPort()) + " - no packets yet"
+            : "Discovery: " + juce::String(pk) + " pkts received"
+              + (sm.hasDiscoveredDevice() ? " - last " + sm.discoveredIP() : juce::String());
+        g.setColour(LAF::textMuted());
+        g.setFont(juce::Font(12.0f));
+        g.drawText(info, bar.reduced(20.0f, 0.0f), juce::Justification::centredLeft, false);
+        return;
+    }
+
+    const auto kb = sm.getBytesSent() / 1024;
+    juce::String sent = kb < 1024 ? juce::String(kb) + " KB"
+                                  : juce::String(kb / 1024.0, 1) + " MB";
+    const int fifoMs = sm.getFIFOLevelMs();
+    const auto under = sm.getFIFOUnderruns();
+
+    struct Item { juce::String label, value; juce::Colour col; };
+    const Item items[] = {
+        { "PACKETS",   juce::String(sm.getPacketsSent()),         LAF::textPrim() },
+        { "SENT",      sent,                                      LAF::textPrim() },
+        { "FIFO",      juce::String(fifoMs) + " ms",
+          fifoMs < 20 ? LAF::stStreaming() : (fifoMs < 50 ? LAF::stConnecting() : LAF::stError()) },
+        { "UNDERRUNS", juce::String(under),
+          under == 0 ? LAF::stStreaming() : LAF::stSearching() },
+        { "DISCOVERY", juce::String(sm.discoveryPacketsReceived()) + " pkts", LAF::textPrim() },
+    };
+
+    const int n = (int) (sizeof(items) / sizeof(items[0]));
+    const float colW = bar.getWidth() / (float) n;
+    for (int i = 0; i < n; ++i)
+    {
+        auto cell = bar.withX(bar.getX() + colW * i).withWidth(colW).reduced(16.0f, 6.0f);
+        if (i > 0)
+        {
+            g.setColour(LAF::borderDim());
+            g.drawVerticalLine((int) (bar.getX() + colW * i), bar.getY() + 8.0f, bar.getBottom() - 8.0f);
+        }
+        g.setColour(LAF::textMuted());
+        g.setFont(juce::Font(9.0f));
+        g.drawText(items[i].label, cell.removeFromTop(12.0f), juce::Justification::topLeft, false);
+        g.setColour(items[i].col);
+        g.setFont(juce::Font(13.0f, juce::Font::bold));
+        g.drawText(items[i].value, cell, juce::Justification::topLeft, false);
+    }
+}
+
+//==============================================================================
 void AudioPluginAudioProcessorEditor::resized()
 {
-    // OS MENU
-    const auto padding = juce::roundToInt(getWidth() * 0.03);
-    auto width = juce::roundToInt(getWidth() * 0.1);
-    auto height = juce::roundToInt(getHeight() * 0.05);
-    auto x = getWidth() - width - padding;
-    auto y = padding;
-    m_oversampling_menu.setBounds(x, y, width, height);
-
-    const int rackX = juce::roundToInt(getWidth() * 0.0);
-    const int rackY = getHeight() / 10;
-    const int rackWidth = juce::roundToInt(getWidth());
-    const int rackHeight = juce::roundToInt(getHeight() * 0.8);
-    const int numEditors = static_cast<int>(m_rack.getEditors().size());
-    const auto rack_extra = juce::roundToInt((rackWidth * 0.25)) * numEditors;
-
-    m_rack.setParentWidth(rackWidth);
-    m_rack.setBounds(
-            rackX,
-            rackY,
-            numEditors < 4 ? rackWidth : rackWidth + rack_extra,
-            rackHeight);
-
-    m_view_port.setBounds(rackX, rackY, rackWidth, rackHeight);
-
-    // MACRO DIALS
-    x = juce::roundToInt(getWidth() * 0.026);
-    y = juce::roundToInt(getHeight() * 0.9);
-    width = juce::roundToInt(getWidth() * 0.05);
-    height = width;
-    for (auto &knob: m_macro_knobs)
-    {
-        knob.setBounds(x, y, width, height);
-        x += width * 2;
-    }
-
-    // Streaming UI — top bar (auto-discovery, no IP/port inputs needed)
-    const int streamX      = 200;
-    const int streamY      = 8;
-    const int rowHeight    = 24;
-    const int spacing      = 8;
-    const int statusWidth  = 220;
-    const int deviceWidth  = 240;
-    const int buttonWidth  = 130;
-
-    // [● Status]  [device info]  [Stop button]  [stats]
-    m_status_label.setBounds(streamX, streamY, statusWidth, rowHeight);
-    m_device_label.setBounds(streamX + statusWidth + spacing, streamY, deviceWidth, rowHeight);
-    m_stream_button.setBounds(streamX + statusWidth + deviceWidth + spacing * 2, streamY, buttonWidth, rowHeight);
-    m_stats_label.setBounds(streamX, streamY + rowHeight + 2, statusWidth + deviceWidth + buttonWidth + spacing * 2, rowHeight);
+    const int W = getWidth();
+    const int topH = juce::jlimit(48, 72, juce::roundToInt(getHeight() * 0.12f));
+    const int btnW = juce::jlimit(120, 170, juce::roundToInt(W * 0.14f));
+    const int btnH = juce::jlimit(28, 40, juce::roundToInt(topH * 0.6f));
+    m_stream_button.setBounds(W - btnW - 20, (topH - btnH) / 2, btnW, btnH);
 }
 
-void AudioPluginAudioProcessorEditor::setComboBoxProps(juce::ComboBox &box, const juce::StringArray &items)
-{
-    box.addItemList(items, 1);
-    box.setSelectedId(1, juce::dontSendNotification);
-    addAndMakeVisible(box);
-}
-
-void AudioPluginAudioProcessorEditor::initMacroKnobs()
-{
-    for (int i = 0; i < m_macro_knobs.size(); ++i)
-    {
-        m_macro_knobs[i].setSliderStyle(juce::Slider::RotaryVerticalDrag);
-        m_macro_knobs[i].setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        m_macro_knobs[i].setComponentID("macro" + juce::String(i + 1) + "ID");
-        m_macro_knobs[i].addMouseListener(this, true);
-        m_macro_attaches.emplace_back(
-                std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(processorRef
-                                                                                               .getTreeState(),
-                                                                                       "macro" + juce::String(i + 1) +
-                                                                                       "ID", m_macro_knobs[i]));
-        addAndMakeVisible(m_macro_knobs[i]);
-    }
-}
-
-void AudioPluginAudioProcessorEditor::changeListenerCallback(juce::ChangeBroadcaster *source)
-{
-    if (auto slider = dynamic_cast<viator::gui::widgets::BaseSlider *>(source))
-    {
-        const auto slider_id_to_map = slider->getComponentID();
-        const auto is_mapped = slider->getIsMapped();
-
-        if (is_mapped)
-        {
-            processorRef.getMacroMap().removeMacroAssignment(slider_id_to_map);
-        } else
-        {
-            processorRef.getMacroMap().addMacroAssignment(slider_id_to_map);
-            slider->getProperties().set(viator::globals::WidgetProperties::macroKey, processorRef.getMacroMap()
-                    .getCurrentMacro());
-        }
-
-        slider->setIsMapped(!is_mapped);
-        slider->showMapping(!is_mapped);
-    }
-}
-
-void AudioPluginAudioProcessorEditor::actionListenerCallback(const juce::String &message)
-{
-    if (message == viator::globals::ActionCommands::editorAdded)
-    {
-        for (auto &editor: m_rack.getEditors())
-        {
-            if (auto *base_editor = dynamic_cast<viator::gui::editors::BaseEditor *>(editor.get()))
-            {
-                for (auto &slider: base_editor->getSliders())
-                {
-                    slider->removeChangeListener(this);
-                    slider->addChangeListener(this);
-                }
-            }
-        }
-
-        resized();
-    }
-
-    if (message == viator::globals::ActionCommands::editorDeleted)
-    {
-        resized();
-    }
-}
-
-void AudioPluginAudioProcessorEditor::mouseDown(const juce::MouseEvent &event)
-{
-    if (event.mods.isRightButtonDown())
-    {
-        if (auto *macro_slider = dynamic_cast<viator::gui::widgets::MacroSlider *>(event.eventComponent))
-        {
-            for (auto &macro: m_macro_knobs)
-            {
-                if (&macro != macro_slider)
-                    macro.enableMacroState(false);
-            }
-
-            const auto selected_macro = macro_slider->getComponentID();
-            macro_slider->toggleMacroState();
-            const auto macro_state = macro_slider->getMacroState();
-            processorRef.getMacroMap().setMacroLearnState(macro_state);
-            processorRef.getMacroMap().macroStateChanged(selected_macro);
-
-            for (auto &editor: m_rack.getEditors())
-            {
-                if (auto *base_editor = dynamic_cast<viator::gui::editors::BaseEditor *>(editor.get()))
-                {
-                    for (auto &slider: base_editor->getSliders())
-                    {
-                        const auto state = static_cast<bool>(static_cast<int>(macro_state));
-                        const auto is_macro = selected_macro == slider->getProperties().getWithDefault(
-                                viator::globals::WidgetProperties::macroKey, "").toString();
-                        slider->showMapping(state && is_macro);
-                    }
-                }
-            }
-        }
-    }
-}
-
-void AudioPluginAudioProcessorEditor::refreshMacroMappings()
-{
-    for (auto& editor : m_rack.getEditors())
-    {
-        if (auto* base_editor = dynamic_cast<viator::gui::editors::BaseEditor*>(editor.get()))
-        {
-            for (auto* slider : base_editor->getSliders())
-            {
-                const auto sliderID = slider->getComponentID();
-                const auto macroID  = processorRef.getMacroMap().getMacroForSlider(sliderID);
-                const bool mapped   = macroID.isNotEmpty();
-
-                // restore component property (GUI-only)
-                if (mapped)
-                    slider->getProperties().set(viator::globals::WidgetProperties::macroKey, macroID);
-                else
-                    slider->getProperties().remove(viator::globals::WidgetProperties::macroKey);
-
-                // restore internal slider state
-                slider->setIsMapped(mapped);
-
-                // default hide until a macro knob is active
-                slider->showMapping(false);
-            }
-        }
-    }
-}
-void AudioPluginAudioProcessorEditor::timerCallback()
-{
-    // Pegel vom Processor holen
-    meterL = processorRef.getMeterL();
-    meterR = processorRef.getMeterR();
-
-    // Update streaming stats
-    updateStreamingUI();
-
-    // GUI neu zeichnen
-    repaint();
-}
-
-void AudioPluginAudioProcessorEditor::initStreamingUI()
-{
-    // Status label — shows discovery / connection state
-    m_status_label.setJustificationType(juce::Justification::centredLeft);
-    m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-    addAndMakeVisible(m_status_label);
-
-    // Device label — shows "IP:port" once an app is discovered
-    m_device_label.setJustificationType(juce::Justification::centredLeft);
-    m_device_label.setColour(juce::Label::textColourId, juce::Colours::white);
-    addAndMakeVisible(m_device_label);
-
-    // Stop button — text and enabled state updated by streamStateChanged / initState.
-    m_stream_button.setButtonText("Searching...");
-    m_stream_button.setEnabled(false);
-    m_stream_button.onClick = [this]() { onStreamButtonClicked(); };
-    addAndMakeVisible(m_stream_button);
-
-    // Stats label — packet / byte counters
-    m_stats_label.setJustificationType(juce::Justification::centredLeft);
-    m_stats_label.setColour(juce::Label::textColourId, juce::Colours::grey);
-    m_stats_label.setFont(juce::Font(12.0f));
-    addAndMakeVisible(m_stats_label);
-}
-
+//==============================================================================
 void AudioPluginAudioProcessorEditor::onStreamButtonClicked()
 {
     auto& sm = processorRef.getStreamManager();
-
     if (sm.isStreaming())
     {
-        // User manually stops: disable auto-reconnect so the 1-second
-        // heartbeat doesn't immediately restart streaming.
         sm.setAutoConnect(false);
         sm.stopStreaming();
-        // streamStateChanged(Disconnected) fires → UI shows "Enable" button.
     }
     else
     {
-        // User re-enables auto-connect.  Discovery is still running; the next
-        // heartbeat (≤1 s) will trigger startStreaming() automatically.
         sm.setAutoConnect(true);
-        m_status_label.setText("Searching for Mix2Go App...", juce::dontSendNotification);
-        m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-        m_stream_button.setButtonText("Auto-Connect active");
-        m_stream_button.setEnabled(false);
     }
+    syncButton();
+    repaint();
 }
 
-void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::StreamState newState)
+void AudioPluginAudioProcessorEditor::streamStateChanged(mix2go::streaming::StreamState)
 {
-    // Always called on the message thread via callAsync in AudioStreamManager.
-    juce::MessageManager::callAsync([this, newState]()
+    juce::MessageManager::callAsync([this]()
     {
-        auto& mgr = processorRef.getStreamManager();
-
-        switch (newState)
-        {
-            case mix2go::streaming::StreamState::Disconnected:
-                m_device_label.setText("", juce::dontSendNotification);
-                if (mgr.isAutoConnectEnabled())
-                {
-                    // Normal searching state — show port so user can verify.
-                    const int port = mgr.discoveryBoundPort();
-                    const juce::String portStr = port > 0
-                        ? " (UDP " + juce::String(port) + ")"
-                        : " (Port-Fehler!)";
-                    m_status_label.setText("Searching for Mix2Go App..." + portStr,
-                                           juce::dontSendNotification);
-                    m_status_label.setColour(juce::Label::textColourId, juce::Colours::orange);
-                    m_stream_button.setButtonText("Searching...");
-                    m_stream_button.setEnabled(false);
-                }
-                else
-                {
-                    // User manually stopped — let them re-enable.
-                    m_status_label.setText("Stopped", juce::dontSendNotification);
-                    m_status_label.setColour(juce::Label::textColourId, juce::Colours::grey);
-                    m_stream_button.setButtonText("Enable Auto-Connect");
-                    m_stream_button.setEnabled(true);
-                }
-                break;
-
-            case mix2go::streaming::StreamState::Connecting:
-                m_status_label.setText("Connecting...", juce::dontSendNotification);
-                m_status_label.setColour(juce::Label::textColourId, juce::Colours::yellow);
-                m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
-                                       juce::dontSendNotification);
-                m_stream_button.setButtonText("Auto-Connect active");
-                m_stream_button.setEnabled(false);
-                break;
-
-            case mix2go::streaming::StreamState::Streaming:
-                m_status_label.setText("● Streaming", juce::dontSendNotification);
-                m_status_label.setColour(juce::Label::textColourId, juce::Colours::limegreen);
-                m_device_label.setText(mgr.discoveredIP() + ":" + juce::String(mgr.discoveredPort()),
-                                       juce::dontSendNotification);
-                m_stream_button.setButtonText("Stop");
-                m_stream_button.setEnabled(true);
-                break;
-
-            case mix2go::streaming::StreamState::Error:
-                m_status_label.setText("Fehler", juce::dontSendNotification);
-                m_status_label.setColour(juce::Label::textColourId, juce::Colours::red);
-                m_device_label.setText("", juce::dontSendNotification);
-                m_stream_button.setButtonText("Enable Auto-Connect");
-                m_stream_button.setEnabled(true);
-                break;
-        }
+        syncButton();
+        repaint();
     });
 }
 
-void AudioPluginAudioProcessorEditor::updateStreamingUI()
+void AudioPluginAudioProcessorEditor::syncButton()
 {
     auto& sm = processorRef.getStreamManager();
+    const auto u = currentUiState();
 
     if (sm.isStreaming())
     {
-        juce::String stats;
-        stats << "Pkts: "       << sm.getPacketsSent()
-              << "  KB: "       << (sm.getBytesSent() / 1024)
-              << "  FIFO: "     << sm.getFIFOLevel()
-              << "  Underruns: "<< sm.getFIFOUnderruns();
-
-        m_stats_label.setText(stats, juce::dontSendNotification);
+        m_stream_button.setButtonText("Stop");
+        m_stream_button.getProperties().set("m2g_stop", true);
+        m_stream_button.setEnabled(true);
+    }
+    else if (u.busy)
+    {
+        m_stream_button.setButtonText(
+            sm.getState() == S::StreamState::Connecting ? "Auto-Connect active" : "Searching...");
+        m_stream_button.getProperties().set("m2g_stop", false);
+        m_stream_button.setEnabled(false);
     }
     else
     {
-        // Show discovery diagnostics so the user can see if it's working.
-        const int pkts = sm.discoveryPacketsReceived();
-        const int port = sm.discoveryBoundPort();
-
-        juce::String info;
-        if (port <= 0)
-        {
-            info = "Discovery: Port bind failed!";
-        }
-        else if (pkts == 0)
-        {
-            info = "Discovery: Listening on UDP " + juce::String(port)
-                 + " — no packets received yet";
-        }
-        else
-        {
-            info = "Discovery: "  + juce::String(pkts)
-                 + " Pkt empfangen  |  last device: "
-                 + sm.discoveredIP();
-            if (sm.discoveredPort() > 0)
-                info += ":" + juce::String(sm.discoveredPort());
-        }
-
-        m_stats_label.setText(info, juce::dontSendNotification);
+        m_stream_button.setButtonText("Enable Auto-Connect");
+        m_stream_button.getProperties().set("m2g_stop", false);
+        m_stream_button.setEnabled(true);
     }
+    m_stream_button.repaint();
+}
+
+void AudioPluginAudioProcessorEditor::timerCallback()
+{
+    const float l = processorRef.getMeterL();
+    const float r = processorRef.getMeterR();
+    // Fast attack, smooth release (message-thread display smoothing).
+    m_dispL = l > m_dispL ? l : m_dispL * 0.80f;
+    m_dispR = r > m_dispR ? r : m_dispR * 0.80f;
+    repaint();
 }

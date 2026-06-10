@@ -314,6 +314,7 @@ public:
     uint64_t getFIFOOverruns() { return m_fifo.getOverrunCount(); }
     uint64_t getFIFOUnderruns() { return m_fifo.getUnderrunCount(); }
     int getFIFOLevel() { return m_fifo.getNumReady(); }
+    int getFIFOLevelMs() { return m_sampleRate > 0 ? (int)(m_fifo.getNumReady() * 1000.0 / m_sampleRate) : 0; }
     
     //==========================================================================
     // Listener

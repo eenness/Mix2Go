@@ -1,78 +1,59 @@
 #pragma once
 
 #include "PluginProcessor.h"
-#include "GUI/Editors/BaseEditor.h"
-#include "GUI/Views/EditorRack.h"
-#include "GUI/Widgets/MacroSlider.h"
 #include "Streaming/AudioStreamManager.h"
+#include "GUI/Style/Mix2GoLookAndFeel.h"
 
+//==============================================================================
+// Mix2Go streaming UI. One job: show the streaming status at a glance —
+// painted logo + wordmark, big status word, stereo VU meters, and a stats bar.
+// Everything except the action button is hand-painted in paint().
 //==============================================================================
 class AudioPluginAudioProcessorEditor final
         : public juce::AudioProcessorEditor,
-          public juce::ChangeListener,
-          public juce::ActionListener,
           public mix2go::streaming::StreamListener,
-          private juce::Timer                                           //timer--> klasse aus juce geerbt
-                                                                        //ermöglicht prozesse in zeitintervallen auszuführen
+          private juce::Timer
 {
 public:
-    explicit AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor &);
-
+    explicit AudioPluginAudioProcessorEditor(AudioPluginAudioProcessor&);
     ~AudioPluginAudioProcessorEditor() override;
 
-    //==============================================================================
-    void paint(juce::Graphics &) override;
-
+    void paint(juce::Graphics&) override;
     void resized() override;
 
 private:
-    // This reference is provided as a quick way for your editor to
-    // access the processor object that created it.
-    AudioPluginAudioProcessor &processorRef;
+    // ── UI state derived from the stream manager ─────────────────────────
+    struct UiState
+    {
+        juce::String word;      // big hero word
+        juce::String subtitle;  // line under it
+        juce::String pill;      // top-bar pill label
+        juce::Colour colour;    // state colour
+        bool streaming;         // meters + streaming stats visible
+        bool busy;              // searching/connecting (button disabled)
+    };
+    UiState currentUiState() const;
 
-    juce::ComboBox m_oversampling_menu;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> m_oversampling_Attach;
+    // ── Paint helpers ────────────────────────────────────────────────────
+    void paintLogo(juce::Graphics&, juce::Rectangle<float>);
+    void paintWordmark(juce::Graphics&, float x, float cy);
+    void paintPill(juce::Graphics&, juce::Rectangle<float>, juce::Colour, const juce::String&);
+    void paintMeters(juce::Graphics&, juce::Rectangle<float>);
+    void paintStatsBar(juce::Graphics&, juce::Rectangle<float>, const UiState&);
+    void paintMeterRow(juce::Graphics&, juce::Rectangle<float>, const juce::String&, float level);
 
-    void setComboBoxProps(juce::ComboBox &box, const juce::StringArray &items);
-
-    viator::gui::views::EditorRack m_rack;
-
-
-    std::array<viator::gui::widgets::MacroSlider, 10> m_macro_knobs;
-    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> m_macro_attaches;
-
-    void initMacroKnobs();
-
-    void changeListenerCallback(juce::ChangeBroadcaster *source) override;
-
-    void actionListenerCallback(const juce::String &message) override;
-
-    void mouseDown(const juce::MouseEvent &event);
-
-    viator::gui::widgets::MacroSlider *m_macro_slider{nullptr};
-
-    void refreshMacroMappings();
-
-    juce::Viewport m_view_port;
-
-    // Streaming UI components
-    juce::TextButton m_stream_button { "Stop Streaming" };
-    juce::Label m_status_label  { "StatusLabel",  "Searching for Mix2Go App..." };
-    juce::Label m_device_label  { "DeviceLabel",  "" };
-    juce::Label m_stats_label   { "StatsLabel",   "" };
-
-    void initStreamingUI();
+    // ── Streaming hooks ──────────────────────────────────────────────────
     void onStreamButtonClicked();
-    void updateStreamingUI();
-    
-    // StreamListener interface
     void streamStateChanged(mix2go::streaming::StreamState newState) override;
+    void syncButton();
+    void timerCallback() override;
 
-    void timerCallback() override;  //wird verwendet um funktionen wieder aufzurufen
-                                    //wir verwenden es um pegel neu abzufangen
+    AudioPluginAudioProcessor& processorRef;
+    mix2go::gui::Mix2GoLookAndFeel m_laf;
+    juce::TextButton m_stream_button { "Stop" };
 
-    float meterL = 0.0f; //pegel werte speichern
-    float meterR = 0.0f;
-    
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)
+    // Smoothed meter values (message-thread only).
+    float m_dispL = 0.0f, m_dispR = 0.0f;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioPluginAudioProcessorEditor)
 };
